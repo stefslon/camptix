@@ -3892,23 +3892,23 @@ class CampTix_Plugin {
 						?>
 						<tr>
 							<td class="tix-column-description">
-								<strong class="tix-ticket-title"><?php echo $ticket->post_title; ?></strong>
+								<h5 class="tix-ticket-title"><?php echo $ticket->post_title; ?></h5>
 								<?php if ( $ticket->post_excerpt ) : ?>
-								<br /><span class="tix-ticket-excerpt"><?php echo $ticket->post_excerpt; ?></span>
+								<p class="tix-ticket-excerpt"><?php echo $ticket->post_excerpt; ?></p>
 								<?php endif; ?>
 								<?php if ( $ticket->tix_coupon_applied ) : ?>
-								<br /><small class="tix-discount"><?php echo esc_html( $ticket->tix_discounted_text ); ?></small>
+								<p class="tix-discount"><?php echo esc_html( $ticket->tix_discounted_text ); ?></p>
 								<?php endif; ?>
 							</td>
-							<td class="tix-column-price" style="vertical-align: middle;">
+							<td class="tix-column-price">
 								<?php if ( $price > 0 ) : ?>
 								<?php echo $this->append_currency( $price ); ?>
 								<?php else : ?>
 									Free
 								<?php endif; ?>
 							</td>
-							<td class="tix-column-remaining" style="vertical-align: middle;"><?php echo $ticket->tix_remaining; ?></td>
-							<td class="tix-column-quantity" style="vertical-align: middle;">
+							<td class="tix-column-remaining"><?php echo $ticket->tix_remaining; ?></td>
+							<td class="tix-column-quantity">
 								<select name="tix_tickets_selected[<?php echo $ticket->ID; ?>]">
 									<?php foreach ( range( 0, $max ) as $value ) : ?>
 									<option <?php selected( $selected, $value ); ?> value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $value ); ?></option>
@@ -3947,7 +3947,7 @@ class CampTix_Plugin {
 			</table>
 
 			<p>
-				<input type="submit" value="<?php esc_attr_e( 'Register &rarr;', 'camptix' ); ?>" style="float: right; cursor: pointer;" />
+				<input type="submit" value="<?php esc_attr_e( 'Register &rarr;', 'camptix' ); ?>" class="button right radius" />
 				<br class="tix-clear" />
 			</p>
 			</form>
@@ -4040,9 +4040,9 @@ class CampTix_Plugin {
 							?>
 							<tr>
 								<td class="tix-column-description">
-									<strong><?php echo $ticket->post_title; ?></strong>
+									<h5 class="tix-ticket-title"><?php echo $ticket->post_title; ?></h5>
 									<?php if ( $ticket->tix_coupon_applied ) : ?>
-									<br /><small><?php echo $ticket->tix_discounted_text; ?></small>
+									<p class="tix-discount"><?php echo $ticket->tix_discounted_text; ?></p>
 									<?php endif; ?>
 								</td>
 								<td class="tix-column-per-ticket">
@@ -4080,7 +4080,7 @@ class CampTix_Plugin {
 							<tbody>
 								<tr>
 									<th colspan="2">
-										<?php echo $i; ?>. <?php echo $ticket->post_title; ?>
+										<h4><?php echo $i; ?>. <?php echo $ticket->post_title; ?></h4>
 									</th>
 								</tr>
 								<tr class="tix-row-first-name">
@@ -4138,7 +4138,7 @@ class CampTix_Plugin {
 				<div class="tix-show-if-js">
 				<table class="tix-receipt-form">
 					<tr>
-						<th colspan="2"><?php _e( 'Receipt', 'camptix' ); ?></th>
+						<th colspan="2"><h4><?php _e( 'Receipt', 'camptix' ); ?></h4></th>
 					</tr>
 					<tr>
 						<td class="tix-left tix-required"><?php _e( 'E-mail the receipt to', 'camptix' ); ?> <span class="tix-required-star">*</span></td>
@@ -4159,9 +4159,9 @@ class CampTix_Plugin {
 							<option <?php selected( ! empty( $this->form_data['tix_payment_method'] ) && $this->form_data['tix_payment_method'] == $payment_method_key ); ?> value="<?php echo esc_attr( $payment_method_key ); ?>"><?php echo esc_html( $payment_method['name'] ); ?></option>
 						<?php endforeach; ?>
 					</select>
-					<input type="submit" value="<?php esc_attr_e( 'Checkout &rarr;', 'camptix' ); ?>" />
+					<input type="submit" value="<?php esc_attr_e( 'Checkout &rarr;', 'camptix' ); ?>" class="button right radius" />
 					<?php else : ?>
-						<input type="submit" value="<?php esc_attr_e( 'Claim Tickets &rarr;', 'camptix' ); ?>" />
+						<input type="submit" value="<?php esc_attr_e( 'Claim Tickets &rarr;', 'camptix' ); ?>" class="button right radius"  />
 					<?php endif; ?>
 					<br class="tix-clear" />
 				</p>
