@@ -3927,7 +3927,7 @@ class CampTix_Plugin {
 								<a href="#" id="tix-coupon-link"><?php _e( 'Click here to enter a coupon code', 'camptix' ); ?></a>
 								<div id="tix-coupon-container" style="display: none;">
 									<input type="text" id="tix-coupon-input" name="tix_coupon" value="" />
-									<input type="submit" name="tix_coupon_submit" value="<?php esc_attr_e( 'Apply Coupon', 'camptix' ); ?>" />
+									<input type="submit" name="tix_coupon_submit" value="<?php esc_attr_e( 'Apply Coupon', 'camptix' ); ?>" class="button radius" />
 								</div>
 								<script>
 									// Hide the link and show the coupon form on click.
@@ -4221,7 +4221,7 @@ class CampTix_Plugin {
 				<tr>
 					<th><?php _e( 'Tickets Summary', 'camptix' ); ?></th>
 					<th><?php _e( 'Purchase Date', 'camptix' ); ?></th>
-					<th></th>
+					<th><?php _e( 'Options', 'camptix' ); ?></th>
 				</tr>
 			</thead>
 			<tbody>
@@ -4268,8 +4268,8 @@ class CampTix_Plugin {
 					?>
 					<tr>
 						<td>
-							<strong><?php echo esc_html( sprintf( "%s %s", $first_name, $last_name ) ); ?></strong><br />
-							<?php echo $this->get_ticket_title( intval( get_post_meta( $attendee->ID, 'tix_ticket_id', true ) ) ); ?>
+							<h5><?php echo esc_html( sprintf( "%s %s", $first_name, $last_name ) ); ?></h5>
+							<p><?php echo $this->get_ticket_title( intval( get_post_meta( $attendee->ID, 'tix_ticket_id', true ) ) ); ?></p>
 						</td>
 						<td>
 							<?php echo mysql2date( get_option( 'date_format' ), $attendee->post_date ); ?>
@@ -4419,7 +4419,7 @@ class CampTix_Plugin {
 					<tbody>
 						<tr>
 							<th colspan="2">
-								<?php echo $ticket->post_title; ?>
+								<h4><?php echo $ticket->post_title; ?></h4>
 							</th>
 						</tr>
 						<tr>
@@ -4454,7 +4454,7 @@ class CampTix_Plugin {
 					</tbody>
 				</table>
 				<p>
-					<input type="submit" value="<?php esc_attr_e( 'Save Attendee Information', 'camptix' ); ?>" style="float: right; cursor: pointer;" />
+					<input type="submit" value="<?php esc_attr_e( 'Save Attendee Information', 'camptix' ); ?>" class="button radius right" />
 					<br class="tix-clear" />
 				</p>
 			</form>
