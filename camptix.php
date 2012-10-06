@@ -395,7 +395,9 @@ class CampTix_Plugin {
 		wp_register_script( 'camptix', plugins_url( 'camptix.js', __FILE__ ), array( 'jquery' ), $this->css_version );
 
 		// Let's play by the rules and print this in the <head> section.
-		wp_enqueue_style( 'camptix' );
+        if ( $this->options['usecss'] ) {
+            wp_enqueue_style( 'camptix' );
+        }
 	}
 
 	function admin_enqueue_scripts() {
@@ -974,6 +976,7 @@ class CampTix_Plugin {
 			'refund_all_enabled' => false,
 			'archived' => false,
 			'payment_methods' => array(),
+            'usecss' => true,
 		) );
 	}
 
@@ -1161,6 +1164,9 @@ class CampTix_Plugin {
 				add_settings_section( 'general', __( 'General Configuration', 'camptix' ), array( $this, 'menu_setup_section_general' ), 'camptix_options' );
 				$this->add_settings_field_helper( 'event_name', __( 'Event Name', 'camptix' ), 'field_text' );
 				$this->add_settings_field_helper( 'currency', __( 'Currency', 'camptix' ), 'field_currency' );
+                $this->add_settings_field_helper( 'usecss', __( 'Include CSS', 'camptix' ), 'field_yesno', false, 
+                    __( "This will include CampTix's CSS style sheet.", 'camptix' )
+                );
 				break;
 			case 'payment':
 				// add_settings_section( 'general', __( 'Payment Configuration', 'camptix' ), array( $this, 'menu_setup_section_payment' ), 'camptix_options' );
@@ -1244,6 +1250,9 @@ class CampTix_Plugin {
 
 		if ( isset( $input['currency'] ) )
 			$output['currency'] = $input['currency'];
+            
+        if ( isset( $input['usecss'] ) )
+			$output['usecss'] = (bool) $input['usecss'];
 
 		$yesno_fields = array(
 			// 'paypal_sandbox',
@@ -3858,16 +3867,16 @@ class CampTix_Plugin {
 				<input type="hidden" name="tix_reservation_token" value="<?php echo esc_attr( $this->reservation['token'] ); ?>" />
 			<?php endif; ?>
 
-			<table class="tix_tickets_table">
-				<thead>
-					<tr>
-						<th class="tix-column-description"><?php _e( 'Description', 'camptix' ); ?></th>
-						<th class="tix-column-price"><?php _e( 'Price', 'camptix' ); ?></th>
-						<th class="tix-column-remaining"><?php _e( 'Remaining', 'camptix' ); ?></th>
-						<th class="tix-column-quantity"><?php _e( 'Quantity', 'camptix' ); ?></th>
-					</tr>
-				</thead>
-				<tbody>
+			
+				<div class="row hide-for-small header">
+					
+						<div class="six columns"><h6><?php _e( 'Description', 'camptix' ); ?></h6></div>
+						<div class="two columns text-center"><h6><?php _e( 'Price', 'camptix' ); ?></h6></div>
+						<div class="two columns text-center"><h6><?php _e( 'Remaining', 'camptix' ); ?></h6></div>
+						<div class="two columns text-center"><h6><?php _e( 'Quantity', 'camptix' ); ?></h6></div>
+					
+				</div>
+				
 					<?php foreach ( $this->tickets as $ticket ) : ?>
 						<?php
 							if ( ! $this->is_ticket_valid_for_purchase( $ticket->ID ) )
@@ -3890,8 +3899,8 @@ class CampTix_Plugin {
 								$price = $ticket->tix_discounted_price;
 							}
 						?>
-						<tr>
-							<td class="tix-column-description">
+						<div class="row">
+							<div class="six columns">
 								<h5 class="tix-ticket-title"><?php echo $ticket->post_title; ?></h5>
 								<?php if ( $ticket->post_excerpt ) : ?>
 								<p class="tix-ticket-excerpt"><?php echo $ticket->post_excerpt; ?></p>
@@ -3899,35 +3908,39 @@ class CampTix_Plugin {
 								<?php if ( $ticket->tix_coupon_applied ) : ?>
 								<p class="tix-discount"><?php echo esc_html( $ticket->tix_discounted_text ); ?></p>
 								<?php endif; ?>
-							</td>
-							<td class="tix-column-price">
+							</div>
+							<div class="two columns mobile-one text-center"><h5><span class="show-for-small">Price</span>
 								<?php if ( $price > 0 ) : ?>
 								<?php echo $this->append_currency( $price ); ?>
 								<?php else : ?>
 									Free
-								<?php endif; ?>
-							</td>
-							<td class="tix-column-remaining"><?php echo $ticket->tix_remaining; ?></td>
-							<td class="tix-column-quantity">
+								<?php endif; ?></h5>
+							</div>
+							<div class="two columns mobile-one text-center"><h5><span class="show-for-small">Rem.</span><?php echo $ticket->tix_remaining; ?></h5></div>
+							<div class="two columns mobile-two text-center"><h5>
 								<select name="tix_tickets_selected[<?php echo $ticket->ID; ?>]">
 									<?php foreach ( range( 0, $max ) as $value ) : ?>
 									<option <?php selected( $selected, $value ); ?> value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $value ); ?></option>
-									<?php endforeach; ?>
+									<?php endforeach; ?></h5>
 								</select>
-							</td>
-						</tr>
+							</div>
+						</div>
 					<?php endforeach; ?>
 						<?php if ( $this->have_coupons() ) : ?>
-						<tr>
-							<td colspan="4" style="text-align: right;">
+						<div class="row">
+							<div class="six columns offset-by-six text-right">
 								<?php if ( $this->coupon ) : ?>
 									<input type="hidden" name="tix_coupon" value="<?php echo esc_attr( $this->coupon->post_title ); ?>" />
 									<?php printf( __( 'Using coupon: <strong>%s</strong>', 'camptix' ), esc_html( $this->coupon->post_title ) ); ?>
 								<?php else : ?>
-								<a href="#" id="tix-coupon-link"><?php _e( 'Click here to enter a coupon code', 'camptix' ); ?></a>
-								<div id="tix-coupon-container" style="display: none;">
-									<input type="text" id="tix-coupon-input" name="tix_coupon" value="" />
-									<input type="submit" name="tix_coupon_submit" value="<?php esc_attr_e( 'Apply Coupon', 'camptix' ); ?>" class="button radius" />
+								<p><a href="#" id="tix-coupon-link" class="secondary tiny button radius"><?php _e( 'Enter a coupon code', 'camptix' ); ?></a></p>
+								<div id="tix-coupon-container" style="display: none;" class="row collapse">
+                                    <div class="eight mobile-two columns">
+                                        <input type="text" id="tix-coupon-input" name="tix_coupon" value="" />
+                                    </div>
+                                    <div class="four mobile-two columns">
+                                        <input type="submit" name="tix_coupon_submit" value="<?php esc_attr_e( 'Apply Coupon', 'camptix' ); ?>" class="postfix secondary tiny button expand" />
+                                    </div>
 								</div>
 								<script>
 									// Hide the link and show the coupon form on click.
@@ -3940,11 +3953,11 @@ class CampTix_Plugin {
 									};
 								</script>
 								<?php endif; // doing coupon && valid ?>
-							</td>
-						</tr>
+							</div>
+						</div>
 						<?php endif; ?>
-				</tbody>
-			</table>
+				
+			
 
 			<p>
 				<input type="submit" value="<?php esc_attr_e( 'Register &rarr;', 'camptix' ); ?>" class="button right radius" />
@@ -4021,53 +4034,52 @@ class CampTix_Plugin {
 					<input type="hidden" name="tix_tickets_selected[<?php echo intval( $ticket_id ); ?>]" value="<?php echo intval( $count ); ?>" />
 				<?php endforeach; ?>
 
-				<h2><?php _e( 'Order Summary', 'camptix' ); ?></h2>
-				<table class="tix_tickets_table tix-order-summary">
-					<thead>
-						<tr>
-							<th class="tix-column-description"><?php _e( 'Description', 'camptix' ); ?></th>
-							<th class="tix-column-per-ticket"><?php _e( 'Per Ticket', 'camptix' ); ?></th>
-							<th class="tix-column-quantity"><?php _e( 'Quantity', 'camptix' ); ?></th>
-							<th class="tix-column-price"><?php _e( 'Price', 'camptix' ); ?></th>
-						</tr>
-					</thead>
-					<tbody>
+				<h4><?php _e( 'Order Summary', 'camptix' ); ?></h4>
+                
+                    <div class="row hide-for-small header">
+
+                        <div class="six columns"><h6><?php _e( 'Description', 'camptix' ); ?></h6></div>
+                        <div class="two columns text-center"><h6><?php _e( 'Per Ticket', 'camptix' ); ?></h6></div>
+                        <div class="two columns text-center"><h6><?php _e( 'Quantity', 'camptix' ); ?></h6></div>
+                        <div class="two columns text-center"><h6><?php _e( 'Price', 'camptix' ); ?></h6></div>
+
+                    </div>
+
+					
 						<?php foreach ( $this->tickets_selected as $ticket_id => $count ) : ?>
 							<?php
 								$ticket = $this->tickets[$ticket_id];
 								$price = ( $ticket->tix_coupon_applied ) ? $ticket->tix_discounted_price : $ticket->tix_price;
 								$total += $price * $count;
 							?>
-							<tr>
-								<td class="tix-column-description">
+							<div class="row">
+								<div class="six columns">
 									<h5 class="tix-ticket-title"><?php echo $ticket->post_title; ?></h5>
 									<?php if ( $ticket->tix_coupon_applied ) : ?>
 									<p class="tix-discount"><?php echo $ticket->tix_discounted_text; ?></p>
 									<?php endif; ?>
-								</td>
-								<td class="tix-column-per-ticket">
+								</div>
+								<div class="two columns mobile-one text-center"><h5><span class="show-for-small">Per Ticket</span>
 								<?php if ( $price > 0 ) : ?>
 									<?php echo $this->append_currency( $price ); ?>
 								<?php else : ?>
 									Free
 								<?php endif; ?>
-								</td>
-								<td class="tix-column-quantity"><?php echo intval( $count ); ?></td>
-								<td class="tix-column-price"><?php echo $this->append_currency( $price  * intval( $count ) ); ?></td>
-							</tr>
+								</div>
+								<div class="two columns mobile-one text-center"><h5><span class="show-for-small">Qty.</span><?php echo intval( $count ); ?></h5></div>
+								<div class="two columns mobile-two text-center"><h5><span class="show-for-small">Price.</span><?php echo $this->append_currency( $price  * intval( $count ) ); ?></h5></div>
+							</div>
 						<?php endforeach; ?>
-						<tr>
-							<td colspan="3" style="text-align: right">
+						<div class="row">
+							<div class="ten columns mobile-two text-right"><p>
 								<?php if ( $this->coupon ) : ?>
 									<small><?php printf( __( 'Using coupon: <strong>%s</strong>', 'camptix' ), esc_html( $this->coupon->post_title ) ); ?></small>
 								<?php endif; ?>
-							</td>
-							<td><strong><?php echo $this->append_currency( $total ); ?></strong></td>
-						</tr>
-					</tbody>
-				</table>
+							</p></div>
+							<div class="two columns mobile-two text-center"><h5><strong><?php echo $this->append_currency( $total ); ?></strong></h5></div>
+						</div>
 
-				<h2 id="tix-registration-information"><?php _e( 'Registration Information', 'camptix' ); ?></h2>
+				<h4 id="tix-registration-information"><?php _e( 'Registration Information', 'camptix' ); ?></h4>
 				<?php foreach ( $this->tickets_selected as $ticket_id => $count ) : ?>
 					<?php foreach ( range( 1, $count ) as $looping_count_times ) : ?>
 
@@ -4076,95 +4088,109 @@ class CampTix_Plugin {
 							$questions = $this->get_sorted_questions( $ticket->ID );
 						?>
 						<input type="hidden" name="tix_attendee_info[<?php echo $i; ?>][ticket_id]" value="<?php echo intval( $ticket->ID ); ?>" />
-						<table class="tix_tickets_table tix-attendee-form">
-							<tbody>
-								<tr>
-									<th colspan="2">
-										<h4><?php echo $i; ?>. <?php echo $ticket->post_title; ?></h4>
-									</th>
-								</tr>
-								<tr class="tix-row-first-name">
-									<td class="tix-required tix-left"><?php _e( 'First Name', 'camptix' ); ?> <span class="tix-required-star">*</span></td>
-									<?php $value = isset( $this->form_data['tix_attendee_info'][$i]['first_name'] ) ? $this->form_data['tix_attendee_info'][$i]['first_name'] : ''; ?>
-									<td class="tix-right"><input name="tix_attendee_info[<?php echo $i; ?>][first_name]" type="text" value="<?php echo esc_attr( $value ); ?>" /></td>
-								</tr>
-								<tr class="tix-row-last-name">
-									<td class="tix-required tix-left"><?php _e( 'Last Name', 'camptix' ); ?> <span class="tix-required-star">*</span></td>
-									<?php $value = isset( $this->form_data['tix_attendee_info'][$i]['last_name'] ) ? $this->form_data['tix_attendee_info'][$i]['last_name'] : ''; ?>
-									<td class="tix-right"><input name="tix_attendee_info[<?php echo $i; ?>][last_name]" type="text" value="<?php echo esc_attr( $value ); ?>" /></td>
-								</tr>
-								<tr class="tix-row-email">
-									<td class="tix-required tix-left"><?php _e( 'E-mail', 'camptix' ); ?> <span class="tix-required-star">*</span></td>
-									<?php $value = isset( $this->form_data['tix_attendee_info'][$i]['email'] ) ? $this->form_data['tix_attendee_info'][$i]['email'] : ''; ?>
-									<td class="tix-right">
-										<input class="tix-field-email" name="tix_attendee_info[<?php echo $i; ?>][email]" type="text" value="<?php echo esc_attr( $value ); ?>" />
-										<?php
-											$tix_receipt_email = isset( $this->form_data['tix_receipt_email'] ) ? $this->form_data['tix_receipt_email'] : 1;
-										?>
-										<?php if ( $this->tickets_selected_count > 1 ) : ?>
-											<div class="tix-hide-if-js">
-												<label><input name="tix_receipt_email" <?php checked( $tix_receipt_email, $i ); ?> value="<?php echo $i; ?>" type="radio" /> <?php _e( 'Send the receipt to this address', 'camptix' ); ?></label>
-											</div>
-										<?php else: ?>
-											<input name="tix_receipt_email" type="hidden" value="1" />
-										<?php endif; ?>
-									</td>
-								</tr>
+						
+                        <fieldset>
+                            <legend><?php echo $i; ?>. <?php echo $ticket->post_title; ?></legend>
 
-								<?php do_action( 'camptix_question_fields_init' ); ?>
-								<?php foreach ( $questions as $question ) : ?>
+                            <div class="row">
+                                <div class="twelve columns">
+                                
+                                    <label><?php _e( 'First Name', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
+                                    <?php $value = isset( $this->form_data['tix_attendee_info'][$i]['first_name'] ) ? $this->form_data['tix_attendee_info'][$i]['first_name'] : ''; ?>
+                                    <input name="tix_attendee_info[<?php echo $i; ?>][first_name]" type="text" value="<?php echo esc_attr( $value ); ?>" />
 
-									<?php
-										$question_key = sanitize_title_with_dashes( $question['field'] );
-										$name = sprintf( 'tix_attendee_questions[%d][%s]', $i, $question_key );
-										$value = isset( $this->form_data['tix_attendee_questions'][$i][$question_key] ) ? $this->form_data['tix_attendee_questions'][$i][$question_key] : '';
-										$question_type = $question['type'];
-									?>
-									<tr class="tix-row-<?php echo $question_key; ?>">
-										<td class="<?php if ( $question['required'] ) echo 'tix-required'; ?> tix-left"><?php echo esc_html( $question['field'] ); ?><?php if ( $question['required'] ) echo ' <span class="tix-required-star">*</span>'; ?></td>
-										<td class="tix-right">
-											<?php do_action( "camptix_question_field_$question_type", $name, $value, $question ); ?>
-										</td>
-									</tr>
-								<?php endforeach; ?>
-							</tbody>
-						</table>
+                                    <label><?php _e( 'Last Name', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
+                                    <?php $value = isset( $this->form_data['tix_attendee_info'][$i]['last_name'] ) ? $this->form_data['tix_attendee_info'][$i]['last_name'] : ''; ?>
+                                    <input name="tix_attendee_info[<?php echo $i; ?>][last_name]" type="text" value="<?php echo esc_attr( $value ); ?>" />
+
+                                    <label><?php _e( 'E-mail', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
+                                    <?php $value = isset( $this->form_data['tix_attendee_info'][$i]['email'] ) ? $this->form_data['tix_attendee_info'][$i]['email'] : ''; ?>
+                                    <input class="tix-field-email" name="tix_attendee_info[<?php echo $i; ?>][email]" type="email" value="<?php echo esc_attr( $value ); ?>" />
+                                    <?php
+                                        $tix_receipt_email = isset( $this->form_data['tix_receipt_email'] ) ? $this->form_data['tix_receipt_email'] : 1;
+                                    ?>
+                                    <?php if ( $this->tickets_selected_count > 1 ) : ?>
+                                        <div class="tix-hide-if-js row"><div class="twelve columns"><p>
+                                            <label><input name="tix_receipt_email" <?php checked( $tix_receipt_email, $i ); ?> value="<?php echo $i; ?>" type="radio" /> <?php _e( 'Send the receipt to this address', 'camptix' ); ?></label>
+                                        </p></div></div>
+                                    <?php else: ?>
+                                        <input name="tix_receipt_email" type="hidden" value="1" />
+                                    <?php endif; ?>
+
+                                    <?php do_action( 'camptix_question_fields_init' ); ?>
+                                    <?php foreach ( $questions as $question ) : ?>
+
+                                        <?php
+                                            $question_key = sanitize_title_with_dashes( $question['field'] );
+                                            $name = sprintf( 'tix_attendee_questions[%d][%s]', $i, $question_key );
+                                            $value = isset( $this->form_data['tix_attendee_questions'][$i][$question_key] ) ? $this->form_data['tix_attendee_questions'][$i][$question_key] : '';
+                                            $question_type = $question['type'];
+                                        ?>
+                                        <!--<tr class="tix-row-<?php echo $question_key; ?>">-->
+                                                <label><?php echo esc_html( $question['field'] ); ?><?php if ( $question['required'] ) echo ' <span class="tix-required-star">*</span>'; ?></label>
+                                                <?php do_action( "camptix_question_field_$question_type", $name, $value, $question ); ?>
+                                    <?php endforeach; ?>
+                            
+                                </div>
+                            </div>
+                            
+                        </fieldset>
+
 						<?php $i++; ?>
 
 					<?php endforeach; // range ?>
 				<?php endforeach; // tickets_selected ?>
 
 				<?php if ( $this->tickets_selected_count > 1 ) : ?>
-				<div class="tix-show-if-js">
-				<table class="tix-receipt-form">
-					<tr>
-						<th colspan="2"><h4><?php _e( 'Receipt', 'camptix' ); ?></h4></th>
-					</tr>
-					<tr>
-						<td class="tix-left tix-required"><?php _e( 'E-mail the receipt to', 'camptix' ); ?> <span class="tix-required-star">*</span></td>
-						<td class="tix-right" id="tix-receipt-emails-list">
-							<?php if ( isset( $this->form_data['tix_receipt_email_js'] ) && is_email( $this->form_data['tix_receipt_email_js'] ) ) : ?>
-								<label><input name="tix_receipt_email_js" checked="checked" value="<?php echo esc_attr( $this->form_data['tix_receipt_email_js'] ); ?>" type="radio" /> <?php echo esc_html( $this->form_data['tix_receipt_email_js'] ); ?></label><br />
-							<?php endif; ?>
-						</td>
-					</tr>
-				</table>
-				</div>
+                    <div class="tix-show-if-js">
+                        <fieldset>
+                                <legend><?php _e( 'Receipt', 'camptix' ); ?></legend>
+
+                                <div class="row">
+                                    <div class="twelve columns">
+
+                                    <label><?php _e( 'E-mail the receipt to', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
+                            
+                                    <?php if ( isset( $this->form_data['tix_receipt_email_js'] ) && is_email( $this->form_data['tix_receipt_email_js'] ) ) : ?>
+                                        <label><input name="tix_receipt_email_js" checked="checked" value="<?php echo esc_attr( $this->form_data['tix_receipt_email_js'] ); ?>" type="radio" /> <?php echo esc_html( $this->form_data['tix_receipt_email_js'] ); ?></label>
+                                    <?php endif; ?>
+                                    
+                                    </div>
+                                </div>
+                        </fieldset>
+                    </div>
 				<?php endif; ?>
 
-				<p class="tix-submit">
-					<?php if ( $total > 0 ) : ?>
-					<select name="tix_payment_method">
-						<?php foreach ( $this->get_enabled_payment_methods() as $payment_method_key => $payment_method ) : ?>
-							<option <?php selected( ! empty( $this->form_data['tix_payment_method'] ) && $this->form_data['tix_payment_method'] == $payment_method_key ); ?> value="<?php echo esc_attr( $payment_method_key ); ?>"><?php echo esc_html( $payment_method['name'] ); ?></option>
-						<?php endforeach; ?>
-					</select>
-					<input type="submit" value="<?php esc_attr_e( 'Checkout &rarr;', 'camptix' ); ?>" class="button right radius" />
-					<?php else : ?>
-						<input type="submit" value="<?php esc_attr_e( 'Claim Tickets &rarr;', 'camptix' ); ?>" class="button right radius"  />
-					<?php endif; ?>
-					<br class="tix-clear" />
-				</p>
+                
+                <?php if ( $total > 0 ) : ?>
+                    <div class="row">
+                        <div class="twelve columns text-right">
+                            <?php if (count($this->get_enabled_payment_methods())>1) : ?>
+                                <select name="tix_payment_method">
+                                    <?php foreach ( $this->get_enabled_payment_methods() as $payment_method_key => $payment_method ) : ?>
+                                        <option <?php selected( ! empty( $this->form_data['tix_payment_method'] ) && $this->form_data['tix_payment_method'] == $payment_method_key ); ?> value="<?php echo esc_attr( $payment_method_key ); ?>"><?php echo esc_html( $payment_method['name'] ); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            <?php else : ?>
+                                <?php $payment_method = current($this->get_enabled_payment_methods()); ?>
+                                <?php $payment_method_key = key($this->get_enabled_payment_methods()); ?>
+                                <?php //echo esc_html( $payment_method['name'] ); ?>
+                                <img src="<?php echo plugins_url( '/images/'.$payment_method_key.'.gif', __FILE__ ); ?>" />
+                                <input type="hidden" name="tix_payment_method" value="<?php echo esc_attr( $payment_method_key ); ?>" />
+                            <?php endif; ?>
+
+                            <br />
+                            <input type="submit" value="<?php esc_attr_e( 'Checkout &rarr;', 'camptix' ); ?>" class="button right radius" />
+                        </div>
+                    </div>
+                <?php else : ?>
+                    <div class="row">
+                        <div class="twelve columns">
+                            <input type="submit" value="<?php esc_attr_e( 'Claim Tickets &rarr;', 'camptix' ); ?>" class="button right radius"  />
+                        </div>
+                    </div>
+                <?php endif; ?>
+                
 			</form>
 		</div><!-- #tix -->
 		<?php
@@ -4216,15 +4242,15 @@ class CampTix_Plugin {
 		?>
 		<div id="tix">
 		<?php do_action( 'camptix_notices' ); ?>
-		<table class="tix-ticket-form">
-			<thead>
-				<tr>
-					<th><?php _e( 'Tickets Summary', 'camptix' ); ?></th>
-					<th><?php _e( 'Purchase Date', 'camptix' ); ?></th>
-					<th><?php _e( 'Options', 'camptix' ); ?></th>
-				</tr>
-			</thead>
-			<tbody>
+		
+			
+				<div class="row hide-for-small header">
+					<div class="six columns"><h6><?php _e( 'Tickets Summary', 'camptix' ); ?></h6></div>
+					<div class="three columns text-center"><h6><?php _e( 'Purchase Date', 'camptix' ); ?></h6></div>
+					<div class="three columns text-center"><h6><?php _e( 'Options', 'camptix' ); ?></h6></div>
+				</div>
+			
+			
 			<?php
 			$paged = 1; $count = 0;
 			while ( $attendees = get_posts( array(
@@ -4266,18 +4292,18 @@ class CampTix_Plugin {
 						if ( $this->is_refundable( $attendee->ID ) )
 							$is_refundable = true;
 					?>
-					<tr>
-						<td>
+					<div class="row">
+						<div class="six columns">
 							<h5><?php echo esc_html( sprintf( "%s %s", $first_name, $last_name ) ); ?></h5>
 							<p><?php echo $this->get_ticket_title( intval( get_post_meta( $attendee->ID, 'tix_ticket_id', true ) ) ); ?></p>
-						</td>
-						<td>
-							<?php echo mysql2date( get_option( 'date_format' ), $attendee->post_date ); ?>
-						</td>
-						<td>
-							<a href="<?php echo esc_url( $edit_link ); ?>"><?php _e( 'Edit information', 'camptix' ); ?></a>
-						</td>
-					</tr>
+						</div>
+						<div class="three columns text-center">
+							<h5><span class="show-for-small">Date</span><?php echo mysql2date( get_option( 'date_format' ), $attendee->post_date ); ?></h5>
+						</div>
+						<div class="three columns text-center">
+							<h5><a href="<?php echo esc_url( $edit_link ); ?>" class="small button radius"><?php _e( 'Edit information', 'camptix' ); ?></a></h5>
+						</div>
+					</div>
 
 					<?php
 					// Delete caches individually rather than clean_post_cache( $attendee_id ),
@@ -4289,10 +4315,10 @@ class CampTix_Plugin {
 				<?php $this->filter_post_meta = false; // Cleanup the prepared data ?>
 			<?php endwhile; ?>
 
-			</tbody>
-		</table>
+			
+		
 		<?php if ( $is_refundable ) : ?>
-		<p><?php printf( __( "Change of plans? Made a mistake? Don't worry, you can %s.", 'camptix' ), '<a href="' . esc_url( $this->get_refund_tickets_link( $access_token ) ) . '">' . __( 'request a refund', 'camptix' ) . '</a>' ); ?></p>
+		<p><?php printf( __( "Change of plans? Made a mistake? Don't worry, you can %s.", 'camptix' ), '<a href="' . esc_url( $this->get_refund_tickets_link( $access_token ) ) . '" class="small alternative button radius">' . __( 'request a refund', 'camptix' ) . '</a>' ); ?></p>
 		<?php endif; ?>
 		</div><!-- #tix -->
 		<?php
@@ -4414,49 +4440,46 @@ class CampTix_Plugin {
 			<form action="<?php echo esc_url( add_query_arg( 'tix_action', 'edit_attendee' ) ); ?>#tix" method="POST">
 				<input type="hidden" name="tix_attendee_save" value="1" />
 
-				<h2><?php _e( 'Attendee Information', 'camptix' ); ?></h2>
-				<table class="tix_tickets_table tix-attendee-form">
-					<tbody>
-						<tr>
-							<th colspan="2">
-								<h4><?php echo $ticket->post_title; ?></h4>
-							</th>
-						</tr>
-						<tr>
-							<td class="tix-required tix-left"><?php _e( 'First Name', 'camptix' ); ?> <span class="tix-required-star">*</span></td>
-							<td class="tix-right"><input name="tix_ticket_info[first_name]" type="text" value="<?php echo esc_attr( $ticket_info['first_name'] ); ?>" /></td>
-						</tr>
-						<tr>
-							<td class="tix-required tix-left"><?php _e( 'Last Name', 'camptix' ); ?> <span class="tix-required-star">*</span></td>
-							<td class="tix-right"><input name="tix_ticket_info[last_name]" type="text" value="<?php echo esc_attr( $ticket_info['last_name'] ); ?>" /></td>
-						</tr>
-						<tr>
-							<td class="tix-required tix-left"><?php _e( 'E-mail', 'camptix' ); ?> <span class="tix-required-star">*</span></td>
-							<td class="tix-right"><input name="tix_ticket_info[email]" type="text" value="<?php echo esc_attr( $ticket_info['email'] ); ?>" /></td>
-						</tr>
+				<h4><?php _e( 'Attendee Information', 'camptix' ); ?></h4>
+				
+                <fieldset>
+                    <legend><?php echo $ticket->post_title; ?></legend>
 
-						<?php do_action( 'camptix_question_fields_init' ); ?>
-						<?php foreach ( $questions as $question ) : ?>
+                    <div class="row">
+                        <div class="twelve columns">
+                        
+                            <label><?php _e( 'First Name', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
+                            <input name="tix_ticket_info[first_name]" type="text" value="<?php echo esc_attr( $ticket_info['first_name'] ); ?>" />
+                
+                            <label><?php _e( 'Last Name', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
+                            <input name="tix_ticket_info[last_name]" type="text" value="<?php echo esc_attr( $ticket_info['last_name'] ); ?>" />
+                
+                            <label><?php _e( 'E-mail', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
+                            <input name="tix_ticket_info[email]" type="text" value="<?php echo esc_attr( $ticket_info['email'] ); ?>" />
 
-							<?php
-								$question_key = sanitize_title_with_dashes( $question['field'] );
-								$question_type = $question['type'];
-								$name = sprintf( 'tix_ticket_questions[%s]', sanitize_title_with_dashes( $question['field'] ) );
-								$value = ( isset( $answers[$question_key] ) ) ? $answers[$question_key] : '';
-							?>
-							<tr>
-								<td class="tix-left <?php if ( $question['required'] ) echo 'tix-required'; ?>"><?php echo esc_html( $question['field'] ); ?><?php if ( $question['required'] ) echo ' <span class="tix-required-star">*</span>'; ?></td>
-								<td class="tix-right">
-									<?php do_action( "camptix_question_field_$question_type", $name, $value, $question ); ?>
-								</td>
-							</tr>
-						<?php endforeach; ?>
-					</tbody>
-				</table>
-				<p>
-					<input type="submit" value="<?php esc_attr_e( 'Save Attendee Information', 'camptix' ); ?>" class="button radius right" />
-					<br class="tix-clear" />
-				</p>
+                            <?php do_action( 'camptix_question_fields_init' ); ?>
+                            <?php foreach ( $questions as $question ) : ?>
+
+                                <?php
+                                    $question_key = sanitize_title_with_dashes( $question['field'] );
+                                    $question_type = $question['type'];
+                                    $name = sprintf( 'tix_ticket_questions[%s]', sanitize_title_with_dashes( $question['field'] ) );
+                                    $value = ( isset( $answers[$question_key] ) ) ? $answers[$question_key] : '';
+                                ?>
+                                    <label><?php echo esc_html( $question['field'] ); ?><?php if ( $question['required'] ) echo ' <span class="tix-required-star">*</span>'; ?></label>
+                                    <?php do_action( "camptix_question_field_$question_type", $name, $value, $question ); ?>
+                            <?php endforeach; ?>
+                
+                        </div>
+                    </div>
+                </fieldset>
+                
+                <div class="row">
+                    <div class="twelve columns">
+                        <input type="submit" value="<?php esc_attr_e( 'Save Attendee Information', 'camptix' ); ?>" class="button radius right" />
+                    </div>
+                </div>
+
 			</form>
 		</div><!-- #tix -->
 		<?php
@@ -5700,36 +5723,36 @@ class CampTix_Plugin {
 
 		$printed = array();
 		if ( count( $this->errors ) > 0 ) {
-			echo '<div id="tix-errors">';
+			//echo '<div id="tix-errors">';
 			foreach ( $this->errors as $message ) {
 				if ( in_array( $message, $printed ) ) continue;
 
 				$printed[] = $message;
-				echo '<p class="tix-error">' . esc_html( $message ) . '</p>';
+				echo '<div class="alert-box alert">' . esc_html( $message ) . '</div>';
 			}
-			echo '</div><!-- #tix-errors -->';
+			//echo '</div><!-- #tix-errors -->';
 		}
 
 		if ( count( $this->notices ) > 0 ) {
-			echo '<div id="tix-notices">';
+			//echo '<div id="tix-notices">';
 			foreach ( $this->notices as $message ) {
 				if ( in_array( $message, $printed ) ) continue;
 
 				$printed[] = $message;
-				echo '<p class="tix-notice">' . esc_html( $message ) . '</p>';
+				echo '<div class="alert-box">' . esc_html( $message ) . '</div>';
 			}
-			echo '</div><!-- #tix-notices -->';
+			//echo '</div><!-- #tix-notices -->';
 		}
 
 		if ( count( $this->infos ) > 0 ) {
-			echo '<div id="tix-infos">';
+			//echo '<div id="tix-infos">';
 			foreach ( $this->infos as $message ) {
 				if ( in_array( $message, $printed ) ) continue;
 
 				$printed[] = $message;
-				echo '<p class="tix-info">' . esc_html( $message ) . '</p>';
+				echo '<div class="alert-box success">' . esc_html( $message ) . '</div>';
 			}
-			echo '</div><!-- #tix-infos -->';
+			//echo '</div><!-- #tix-infos -->';
 		}
 	}
 
