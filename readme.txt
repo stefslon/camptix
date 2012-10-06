@@ -3,7 +3,7 @@ Contributors: automattic, kovshenin, andreamiddleton
 Tags: ticketing, event ticketing
 Requires at least: 3.4
 Tested up to: 3.4.1
-Stable tag: 1.1
+Stable tag: 1.2
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -47,6 +47,14 @@ For more information, visit the [Getting Started](https://github.com/automattic/
 
 = 1.2 =
 * Added and API for payment methods
+* Enhanced logging around payments
+* UI cleanup in ticket questions
+* Invalidate attendees list shortcode when an attendee is changed
+* Improved admin columns in attendees, tickets and coupons
+* Added GBP currency to PayPal
+* Enabled meta logging addon by default
+* Added textarea and radio question types
+* Added column attribute to the [camptix_attendees] shortcode
 * Added a couple of language packs
 * Minor cleanups and bugfixes
 
