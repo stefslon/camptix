@@ -3985,12 +3985,13 @@ class CampTix_Plugin {
 						?>
 						<div class="row">
 							<div class="six columns">
-								<h5 class="tix-ticket-title"><?php echo $ticket->post_title; ?></h5>
+								<h5 class="tix-ticket-title"><?php echo $ticket->post_title; ?>
+									<?php if ( $ticket->tix_coupon_applied ) : ?>
+									<span class="label success radius"><?php echo esc_html( $ticket->tix_discounted_text ); ?></span>
+									<?php endif; ?>
+								</h5>
 								<?php if ( $ticket->post_excerpt ) : ?>
 								<p class="tix-ticket-excerpt"><?php echo $ticket->post_excerpt; ?></p>
-								<?php endif; ?>
-								<?php if ( $ticket->tix_coupon_applied ) : ?>
-								<p class="tix-discount"><?php echo esc_html( $ticket->tix_discounted_text ); ?></p>
 								<?php endif; ?>
 							</div>
 							<div class="two columns mobile-one text-center"><h5><span class="show-for-small">Price</span>
@@ -4024,7 +4025,7 @@ class CampTix_Plugin {
 											$discount_text = $discount_percent . '%';
 										}
 									?>
-									<?php printf( __( 'Coupon Applied: <strong>%s</strong>, %s discount', 'camptix' ), esc_html( $this->coupon->post_title ), $discount_text ); ?>
+									<p><?php printf( __( 'Coupon Applied: <strong>%s</strong>, %s discount', 'camptix' ), esc_html( $this->coupon->post_title ), $discount_text ); ?></p>
 								<?php else : ?>
 								<p><a href="#" id="tix-coupon-link" class="secondary tiny button radius"><?php _e( 'Enter a coupon code', 'camptix' ); ?></a></p>
 								<div id="tix-coupon-container" style="display: none;" class="row collapse">
@@ -4143,10 +4144,10 @@ class CampTix_Plugin {
 							?>
 							<div class="row">
 								<div class="six columns">
-									<h5 class="tix-ticket-title"><?php echo $ticket->post_title; ?></h5>
+									<h5 class="tix-ticket-title"><?php echo $ticket->post_title; ?>
 									<?php if ( $ticket->tix_coupon_applied ) : ?>
-									<p class="tix-discount"><?php echo $ticket->tix_discounted_text; ?></p>
-									<?php endif; ?>
+									<span class="label success radius"><?php echo $ticket->tix_discounted_text; ?></span>
+									<?php endif; ?></h5>
 								</div>
 								<div class="two columns mobile-one text-center"><h5><span class="show-for-small">Per Ticket</span>
 								<?php if ( $price > 0 ) : ?>
@@ -4273,7 +4274,7 @@ class CampTix_Plugin {
 								<?php $payment_method = current($this->get_enabled_payment_methods()); ?>
 								<?php $payment_method_key = key($this->get_enabled_payment_methods()); ?>
 								<?php //echo esc_html( $payment_method['name'] ); ?>
-								<img src="<?php echo plugins_url( '/images/'.$payment_method_key.'.gif', __FILE__ ); ?>" />
+								<img src="<?php echo plugins_url( '/images/'.$payment_method_key.'.jpg', __FILE__ ); ?>" class="tix-payment-img" />
 								<input type="hidden" name="tix_payment_method" value="<?php echo esc_attr( $payment_method_key ); ?>" />
 							<?php endif; ?>
 
