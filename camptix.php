@@ -3049,9 +3049,11 @@ class CampTix_Plugin {
 	 */
 	function question_field_radio( $name, $user_value, $question ) {
 		?>
+		<p>
 		<?php foreach ( (array) $question['values'] as $question_value ) : ?>
-			<label><input <?php checked( $question_value, $user_value ); ?> name="<?php echo esc_attr( $name ); ?>" type="radio" value="<?php echo esc_attr( $question_value ); ?>" /> <?php echo esc_html( $question_value ); ?></label><br />
+			<label><input <?php checked( $question_value, $user_value ); ?> name="<?php echo esc_attr( $name ); ?>" type="radio" value="<?php echo esc_attr( $question_value ); ?>" /> <?php echo esc_html( $question_value ); ?></label>
 		<?php endforeach; ?>
+		</p>
 		<?php
 	}
 
