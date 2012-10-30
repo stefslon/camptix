@@ -2991,28 +2991,28 @@ class CampTix_Plugin {
 	 * Runs before question fields are printed, initialize controls actions here.
 	 */
 	function question_fields_init() {
-		add_action( 'camptix_question_field_text', array( $this, 'question_field_text' ), 10, 2 );
-		add_action( 'camptix_question_field_select', array( $this, 'question_field_select' ), 10, 3 );
-		add_action( 'camptix_question_field_checkbox', array( $this, 'question_field_checkbox' ), 10, 3 );
-		add_action( 'camptix_question_field_textarea', array( $this, 'question_field_textarea' ), 10, 2 );
-		add_action( 'camptix_question_field_radio', array( $this, 'question_field_radio' ), 10, 3 );
+		add_action( 'camptix_question_field_text', array( $this, 'question_field_text' ), 10, 4 );
+		add_action( 'camptix_question_field_select', array( $this, 'question_field_select' ), 10, 4 );
+		add_action( 'camptix_question_field_checkbox', array( $this, 'question_field_checkbox' ), 10, 4 );
+		add_action( 'camptix_question_field_textarea', array( $this, 'question_field_textarea' ), 10, 4 );
+		add_action( 'camptix_question_field_radio', array( $this, 'question_field_radio' ), 10, 4 );
 	}
 
 	/**
 	 * A text input for a question.
 	 */
-	function question_field_text( $name, $value ) {
+	function question_field_text( $name, $value, $question, $required = false ) {
 		?>
-		<input name="<?php echo esc_attr( $name ); ?>" type="text" value="<?php echo esc_attr( $value ); ?>" />
+		<input name="<?php echo esc_attr( $name ); ?>" type="text" value="<?php echo esc_attr( $value ); ?>" <?php if ($required) echo 'class="required"'; ?> />
 		<?php
 	}
 
 	/**
 	 * A drop-down select for a question.
 	 */
-	function question_field_select( $name, $user_value, $question ) {
+	function question_field_select( $name, $user_value, $question, $required = false ) {
 		?>
-		<select name="<?php echo esc_attr( $name ); ?>" />
+		<select name="<?php echo esc_attr( $name ); ?>" <?php if ($required) echo 'class="required"'; ?> />
 			<?php foreach ( (array) $question['values'] as $question_value ) : ?>
 				<option <?php selected( $question_value, $user_value ); ?> value="<?php echo esc_attr( $question_value ); ?>"><?php echo esc_html( $question_value ); ?></option>
 			<?php endforeach; ?>
@@ -3023,11 +3023,11 @@ class CampTix_Plugin {
 	/**
 	 * A single or multiple checkbox for a question.
 	 */
-	function question_field_checkbox( $name, $user_value, $question ) {
+	function question_field_checkbox( $name, $user_value, $question, $required = false ) {
 		?>
 		<?php if ( (array) $question['values'] ) : ?>
 			<?php foreach ( $question['values'] as $question_value ) : ?>
-				<label><input <?php checked( in_array( $question_value, (array) $user_value ) ); ?> name="<?php echo esc_attr( $name ); ?>[<?php echo sanitize_title_with_dashes( $question_value ); ?>]" type="checkbox" value="<?php echo esc_attr( $question_value ); ?>" /> <?php echo esc_html( $question_value ); ?></label><br />
+				<label><input <?php checked( in_array( $question_value, (array) $user_value ) ); ?> name="<?php echo esc_attr( $name ); ?>[<?php echo sanitize_title_with_dashes( $question_value ); ?>]" type="checkbox" value="<?php echo esc_attr( $question_value ); ?>" <?php if ($required) echo 'class="required"'; ?> /> <?php echo esc_html( $question_value ); ?></label><br />
 			<?php endforeach; ?>
 		<?php else : ?>
 			<label><input <?php checked( $user_value, 'Yes' ); ?> name="<?php echo esc_attr( $name ); ?>" type="checkbox" value="Yes" /> <?php _e( 'Yes', 'camptix' ); ?></label>
@@ -3038,20 +3038,20 @@ class CampTix_Plugin {
 	/**
 	 * A textarea input for questions.
 	 */
-	function question_field_textarea( $name, $value ) {
+	function question_field_textarea( $name, $value, $question, $required = false ) {
 		?>
-		<textarea name="<?php echo esc_attr( $name ); ?>"><?php echo esc_textarea( $value ); ?></textarea>
+		<textarea name="<?php echo esc_attr( $name ); ?>" <?php if ($required) echo 'class="required"'; ?>><?php echo esc_textarea( $value ); ?></textarea>
 		<?php
 	}
 
 	/**
 	 * A radio input for questions.
 	 */
-	function question_field_radio( $name, $user_value, $question ) {
+	function question_field_radio( $name, $user_value, $question, $required = false ) {
 		?>
 		<p>
 		<?php foreach ( (array) $question['values'] as $question_value ) : ?>
-			<label><input <?php checked( $question_value, $user_value ); ?> name="<?php echo esc_attr( $name ); ?>" type="radio" value="<?php echo esc_attr( $question_value ); ?>" /> <?php echo esc_html( $question_value ); ?></label>
+			<label><input <?php checked( $question_value, $user_value ); ?> name="<?php echo esc_attr( $name ); ?>" type="radio" value="<?php echo esc_attr( $question_value ); ?>" <?php if ($required) echo 'class="required"'; ?> /> <?php echo esc_html( $question_value ); ?></label>
 		<?php endforeach; ?>
 		</p>
 		<?php
@@ -3971,14 +3971,14 @@ class CampTix_Plugin {
 							$price = $ticket->tix_price;
 							$discounted = '';
 
-							$max = min( $ticket->tix_remaining, 10 );
+							$max = min( $ticket->tix_remaining, 5 );
 							$selected = 0;
 							if ( isset( $this->tickets_selected[$ticket->ID] ) )
 								$selected = intval( $this->tickets_selected[$ticket->ID] );
 
 							// Recount selects, change price.
 							if ( $ticket->tix_coupon_applied ) {
-								$max = min( $this->coupon->tix_coupon_remaining, $ticket->tix_remaining, 10 );
+								$max = min( $this->coupon->tix_coupon_remaining, $ticket->tix_remaining, 5 );
 								if ( $selected > $this->coupon->tix_coupon_remaining )
 									$selected = $this->coupon->tix_coupon_remaining;
 
@@ -4072,7 +4072,7 @@ class CampTix_Plugin {
 	/**
 	 * Step 2: asks for attendee information on chosen tickets.
 	 */
-	function form_attendee_info() {
+	function form_attendee_info() {	
 		if ( isset( $this->error_flags['no_tickets_selected'] ) && 'checkout' == get_query_var( 'tix_action' ) )
 			return $this->form_start();
 
@@ -4196,17 +4196,17 @@ class CampTix_Plugin {
 						<div class="row">
 							<div class="twelve columns">
 
-								<label><?php _e( 'First Name', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
-								<?php $value = isset( $this->form_data['tix_attendee_info'][$i]['first_name'] ) ? $this->form_data['tix_attendee_info'][$i]['first_name'] : ''; ?>
-								<input name="tix_attendee_info[<?php echo $i; ?>][first_name]" type="text" value="<?php echo esc_attr( $value ); ?>" />
+									<label><?php _e( 'First Name', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
+									<?php $value = isset( $this->form_data['tix_attendee_info'][$i]['first_name'] ) ? $this->form_data['tix_attendee_info'][$i]['first_name'] : ''; ?>
+									<input name="tix_attendee_info[<?php echo $i; ?>][first_name]" type="text" value="<?php echo esc_attr( $value ); ?>" class="required" />
 
 									<label><?php _e( 'Last Name', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
 									<?php $value = isset( $this->form_data['tix_attendee_info'][$i]['last_name'] ) ? $this->form_data['tix_attendee_info'][$i]['last_name'] : ''; ?>
-									<input name="tix_attendee_info[<?php echo $i; ?>][last_name]" type="text" value="<?php echo esc_attr( $value ); ?>" />
+									<input name="tix_attendee_info[<?php echo $i; ?>][last_name]" type="text" value="<?php echo esc_attr( $value ); ?>" class="required" />
 
 									<label><?php _e( 'E-mail', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
 									<?php $value = isset( $this->form_data['tix_attendee_info'][$i]['email'] ) ? $this->form_data['tix_attendee_info'][$i]['email'] : ''; ?>
-									<input class="tix-field-email" name="tix_attendee_info[<?php echo $i; ?>][email]" type="email" value="<?php echo esc_attr( $value ); ?>" />
+									<input class="tix-field-email required" name="tix_attendee_info[<?php echo $i; ?>][email]" type="email" value="<?php echo esc_attr( $value ); ?>" />
 									<?php
 										$tix_receipt_email = isset( $this->form_data['tix_receipt_email'] ) ? $this->form_data['tix_receipt_email'] : 1;
 									?>
@@ -4222,14 +4222,16 @@ class CampTix_Plugin {
 									<?php foreach ( $questions as $question ) : ?>
 
 										<?php
-											$question_key = sanitize_title_with_dashes( $question['field'] );
-											$name = sprintf( 'tix_attendee_questions[%d][%s]', $i, $question_key );
-											$value = isset( $this->form_data['tix_attendee_questions'][$i][$question_key] ) ? $this->form_data['tix_attendee_questions'][$i][$question_key] : '';
-											$question_type = $question['type'];
+										$question_key = sanitize_title_with_dashes( $question['field'] );
+										$name = sprintf( 'tix_attendee_questions[%d][%s]', $i, $question_key );
+										$value = isset( $this->form_data['tix_attendee_questions'][$i][$question_key] ) ? $this->form_data['tix_attendee_questions'][$i][$question_key] : '';
+										$question_type = $question['type'];
 										?>
+
 										<!--<tr class="tix-row-<?php echo $question_key; ?>">-->
-											<label><?php echo esc_html( $question['field'] ); ?><?php if ( $question['required'] ) echo ' <span class="tix-required-star">*</span>'; ?></label>
-											<?php do_action( "camptix_question_field_$question_type", $name, $value, $question ); ?>
+										<label><?php echo esc_html( $question['field'] ); ?><?php if ( $question['required'] ) echo ' <span class="tix-required-star">*</span>'; ?></label>
+										<?php do_action( "camptix_question_field_$question_type", $name, $value, $question, $question['required'] ); ?>
+
 									<?php endforeach; ?>
 
 								</div>
@@ -4253,7 +4255,7 @@ class CampTix_Plugin {
 									<label><?php _e( 'E-mail the receipt to', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
 
 									<?php if ( isset( $this->form_data['tix_receipt_email_js'] ) && is_email( $this->form_data['tix_receipt_email_js'] ) ) : ?>
-										<label><input name="tix_receipt_email_js" checked="checked" value="<?php echo esc_attr( $this->form_data['tix_receipt_email_js'] ); ?>" type="radio" /> <?php echo esc_html( $this->form_data['tix_receipt_email_js'] ); ?></label>
+										<label><input name="tix_receipt_email_js" checked="checked" value="<?php echo esc_attr( $this->form_data['tix_receipt_email_js'] ); ?>" type="radio" class="required" /> <?php echo esc_html( $this->form_data['tix_receipt_email_js'] ); ?></label>
 									<?php endif; ?>
 
 								</div>
@@ -4550,25 +4552,27 @@ class CampTix_Plugin {
 						<div class="twelve columns">
 
 							<label><?php _e( 'First Name', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
-							<input name="tix_ticket_info[first_name]" type="text" value="<?php echo esc_attr( $ticket_info['first_name'] ); ?>" />
+							<input name="tix_ticket_info[first_name]" type="text" value="<?php echo esc_attr( $ticket_info['first_name'] ); ?>" class="required" />
 
 							<label><?php _e( 'Last Name', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
-							<input name="tix_ticket_info[last_name]" type="text" value="<?php echo esc_attr( $ticket_info['last_name'] ); ?>" />
+							<input name="tix_ticket_info[last_name]" type="text" value="<?php echo esc_attr( $ticket_info['last_name'] ); ?>" class="required" />
 
 							<label><?php _e( 'E-mail', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
-							<input name="tix_ticket_info[email]" type="text" value="<?php echo esc_attr( $ticket_info['email'] ); ?>" />
+							<input name="tix_ticket_info[email]" type="text" value="<?php echo esc_attr( $ticket_info['email'] ); ?>" class="required" />
 
 							<?php do_action( 'camptix_question_fields_init' ); ?>
 							<?php foreach ( $questions as $question ) : ?>
 
 								<?php
-									$question_key = sanitize_title_with_dashes( $question['field'] );
-									$question_type = $question['type'];
-									$name = sprintf( 'tix_ticket_questions[%s]', sanitize_title_with_dashes( $question['field'] ) );
-									$value = ( isset( $answers[$question_key] ) ) ? $answers[$question_key] : '';
+								$question_key = sanitize_title_with_dashes( $question['field'] );
+								$question_type = $question['type'];
+								$name = sprintf( 'tix_ticket_questions[%s]', sanitize_title_with_dashes( $question['field'] ) );
+								$value = ( isset( $answers[$question_key] ) ) ? $answers[$question_key] : '';
 								?>
-									<label><?php echo esc_html( $question['field'] ); ?><?php if ( $question['required'] ) echo ' <span class="tix-required-star">*</span>'; ?></label>
-									<?php do_action( "camptix_question_field_$question_type", $name, $value, $question ); ?>
+
+								<label><?php echo esc_html( $question['field'] ); ?><?php if ( $question['required'] ) echo ' <span class="tix-required-star">*</span>'; ?></label>
+								<?php do_action( "camptix_question_field_$question_type", $name, $value, $question, $question['required'] ); ?>
+
 							<?php endforeach; ?>
 
 						</div>
@@ -4698,6 +4702,7 @@ class CampTix_Plugin {
 
 		ob_start();
 		?>
+		<?php // TODO: convert to responsive layout ?>
 		<div id="tix">
 			<?php do_action( 'camptix_notices' ); ?>
 			<form action="<?php echo esc_url( add_query_arg( 'tix_action', 'refund_request' ) ); ?>#tix" method="POST">
