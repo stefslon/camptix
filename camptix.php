@@ -1186,6 +1186,12 @@ class CampTix_Plugin {
 				$this->add_settings_field_helper( 'usecss', __( 'Include CSS', 'camptix' ), 'field_yesno', false, 
 					__( "This will include CampTix's CSS style sheet.", 'camptix' )
 				);
+				$this->add_settings_field_helper( 'hidesoldout', __( 'Hide Sold Out Tickets', 'camptix' ), 'field_yesno', false, 
+					__( "This will hide sold out tickets from the tickets table.", 'camptix' )
+				);
+				$this->add_settings_field_helper( 'hidereserve', __( 'Hide Reserve', 'camptix' ), 'field_yesno', false, 
+					__( "This will hide the number of reserved tickets from the tickets table.", 'camptix' )
+				);
 				break;
 			case 'payment':
 				// add_settings_section( 'general', __( 'Payment Configuration', 'camptix' ), array( $this, 'menu_setup_section_payment' ), 'camptix_options' );
@@ -1272,6 +1278,12 @@ class CampTix_Plugin {
 
 		if ( isset( $input['usecss'] ) )
 			$output['usecss'] = (bool) $input['usecss'];
+			
+		if ( isset( $input['hidesoldout'] ) )
+			$output['hidesoldout'] = (bool) $input['hidesoldout'];
+			
+		if ( isset( $input['hidereserve'] ) )
+			$output['hidereserve'] = (bool) $input['hidereserve'];
 
 		$yesno_fields = array(
 			// 'paypal_sandbox',
@@ -3996,20 +4008,38 @@ class CampTix_Plugin {
 								<p class="tix-ticket-excerpt"><?php echo $ticket->post_excerpt; ?></p>
 								<?php endif; ?>
 							</div>
-							<div class="two columns mobile-one text-center"><h5><span class="show-for-small">Price</span>
+							<div class="two columns mobile-one text-center"><h5><span class="show-for-small"><?php _e( 'Price', 'camptix' ); ?></span>
 								<?php if ( $price > 0 ) : ?>
 								<?php echo $this->append_currency( $price ); ?>
 								<?php else : ?>
-									Free
+									<?php _e( 'Free', 'camptix' ); ?>
 								<?php endif; ?></h5>
 							</div>
-							<div class="two columns mobile-one text-center"><h5><span class="show-for-small">Rem.</span><?php echo $ticket->tix_remaining; ?></h5></div>
+							<div class="two columns mobile-one text-center"><h5><span class="show-for-small"><?php _e( 'Rem.', 'camptix' ); ?></span><?php echo $ticket->tix_remaining; ?>
+							<?php 
+								if (!($this->options['hidereserve'])) {
+									if ( $this->options['reservations_enabled'] && !(isset( $this->reservation ) && $this->reservation )) {
+										$reserved = 0;
+										$reservations = $this->get_reservations( $ticket->ID );
+										foreach ( $reservations as $reservation_token => $reservation )
+											$reserved += $reservation['quantity'] - $this->get_purchased_tickets_count( $ticket->ID, $reservation_token );
+
+										if ( $reserved > 0 )
+											printf( ' ' . __( '(and %d reserved)', 'camptix' ), $reserved );
+									}
+								} 
+							?>
+							</h5></div>
 							<div class="two columns mobile-two text-center"><h5>
-								<select name="tix_tickets_selected[<?php echo $ticket->ID; ?>]">
-									<?php foreach ( range( 0, $max ) as $value ) : ?>
-									<option <?php selected( $selected, $value ); ?> value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $value ); ?></option>
-									<?php endforeach; ?></h5>
-								</select>
+								<?php if ($ticket->tix_remaining==0) { ?>
+									<?php echo _e( 'Sold Out', 'camptix' ); ?>
+								<?php } else { ?>
+									<select name="tix_tickets_selected[<?php echo $ticket->ID; ?>]">
+										<?php foreach ( range( 0, $max ) as $value ) : ?>
+										<option <?php selected( $selected, $value ); ?> value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $value ); ?></option>
+										<?php endforeach; ?></h5>
+									</select>
+								<?php } ?>
 							</div>
 						</div>
 					<?php endforeach; ?>
@@ -4913,7 +4943,7 @@ class CampTix_Plugin {
 		if ( isset( $this->reservation ) && $this->reservation )
 			$via_reservation = $this->reservation['token'];
 
-		if ( $this->get_remaining_tickets( $post_id, $via_reservation ) < 1 ) return false;
+		if ( ($this->get_remaining_tickets( $post_id, $via_reservation ) < 1) && ($this->options['hidesoldout']) ) return false;
 
 		$start = get_post_meta( $post_id, 'tix_start', true );
 		$end = get_post_meta( $post_id, 'tix_end', true );
