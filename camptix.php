@@ -4275,25 +4275,10 @@ class CampTix_Plugin {
 				<?php endforeach; // tickets_selected ?>
 
 				<?php if ( $this->tickets_selected_count > 1 ) : ?>
-					<div class="tix-show-if-js">
-						<fieldset>
-							<legend><?php _e( 'Receipt', 'camptix' ); ?></legend>
-
-							<div class="row">
-								<div class="twelve columns">
-
-									<label><?php _e( 'E-mail the receipt to', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
-
-									<?php if ( isset( $this->form_data['tix_receipt_email_js'] ) && is_email( $this->form_data['tix_receipt_email_js'] ) ) : ?>
-										<label><input name="tix_receipt_email_js" checked="checked" value="<?php echo esc_attr( $this->form_data['tix_receipt_email_js'] ); ?>" type="radio" class="required" /> <?php echo esc_html( $this->form_data['tix_receipt_email_js'] ); ?></label>
-									<?php endif; ?>
-
-								</div>
-							</div>
-						</fieldset>
-					</div>
+					<?php if ( isset( $this->form_data['tix_receipt_email_js'] ) && is_email( $this->form_data['tix_receipt_email_js'] ) ) : ?>
+						<input name="tix_receipt_email_js" checked="checked" value="<?php echo esc_attr( $this->form_data['tix_receipt_email_js'] ); ?>" type="hidden" class="required" /> <?php echo esc_html( $this->form_data['tix_receipt_email_js'] ); ?>
+					<?php endif; ?>
 				<?php endif; ?>
-
 
 				<?php if ( $total > 0 ) : ?>
 					<div class="row">
