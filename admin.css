@@ -75,6 +75,7 @@
 	padding-left: 8px;
 	padding-right: 8px;
 	padding-top: 4px;
+	text-transform: uppercase;
 }
 
 .tix-ticket-questions .tix-item-inner-right a {
@@ -88,6 +89,10 @@
 .tix-ticket-questions .tix-item-inner-right a:hover,
 .tix-ticket-questions .tix-item-inner-right a:focus {
 	color: #333;
+}
+
+.tix-ticket-questions .tix-item-inner-right a.tix-item-delete:hover {
+	color: red;
 }
 
 .tix-ticket-questions span.tix-field-type {
@@ -130,6 +135,9 @@
 }
 #tix-add-question-existing-list {
 	width: 90%;
+}
+.tix-existing-question.tix-disabled label {
+	color: #ccc;
 }
 .tix-item .tix-field-required-star {
 	display: none;
@@ -270,3 +278,31 @@ label.tix-yes-no {
 		background-position: -52px -11px;
 	}
 }
+
+
+/**
+ * === RTL Styles ===
+ * Should always be at the EOF, since they need to override
+ * some of the default styles in RTL environments.
+ * RTL installs should have a class appended to <body>
+ * named 'rtl'. We're going to use it to line things up.
+ */
+.rtl .tix-ticket-questions .tix-item-inner-left {
+	float: right;
+	text-align: left;
+	width: 70px;
+}
+.rtl .tix-ticket-questions .tix-item-inner-middle {
+	margin-left: 0;
+	margin-right: 78px;
+}
+.rtl .tix-ticket-questions span.tix-field-type {
+	font-size: 11px;
+	font-weight: bold;
+}
+.rtl .tix-ticket-questions .tix-item-inner-right { float: left; }
+
+.rtl .tix-log-table { direction: ltr; }
+
+.rtl #tix_coupon_options .misc-pub-section span.left,
+.rtl #tix_coupon_availability .misc-pub-section span.left { float: right; }
