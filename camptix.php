@@ -3,7 +3,7 @@
  * Plugin Name: CampTix Event Ticketing
  * Plugin URI: http://wordcamp.org
  * Description: Simple and flexible event ticketing for WordPress.
- * Version: 1.3
+ * Version: 1.3.1
  * Author: Automattic
  * Author URI: http://wordcamp.org
  * License: GPLv2
@@ -16,11 +16,13 @@ class CampTix_Plugin {
 	protected $infos;
 	protected $admin_notices;
 
+	protected $tmp;
+
 	public $debug;
 	public $beta_features_enabled;
 	public $version = 20121227;
 	public $css_version = 20121227;
-	public $js_version = 20121227;
+	public $js_version = 20130701;
 	public $caps;
 
 	public $addons = array();
@@ -46,6 +48,7 @@ class CampTix_Plugin {
 	const PAYMENT_STATUS_FAILED = 4;
 	const PAYMENT_STATUS_TIMEOUT = 5;
 	const PAYMENT_STATUS_REFUNDED = 6;
+	const PAYMENT_STATUS_REFUND_FAILED = 7;
 
 	/**
 	 * Fired as soon as this file is loaded, don't do anything
@@ -56,6 +59,10 @@ class CampTix_Plugin {
 
 		require( dirname( __FILE__ ) . '/inc/class-camptix-addon.php' );
 		require( dirname( __FILE__ ) . '/inc/class-camptix-payment-method.php' );
+
+		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+			require_once( dirname( __FILE__ ) . '/inc/class-wp-cli-commands.php' );
+		}
 
 		// Addons
 		add_action( 'init', array( $this, 'load_addons' ), 8 );
@@ -69,14 +76,6 @@ class CampTix_Plugin {
 		load_plugin_textdomain( 'camptix', false, dirname( plugin_basename( __FILE__ ) ) . '/languages/' );
 	}
 
-	// The tix_action is a user-facing query var, let's enable it.
-	function query_vars( $query_vars ) {
-		$query_vars = array_merge( $query_vars, array(
-			'tix_action',
-		) );
-		return $query_vars;
-	}
-
 	/**
 	 * Fired during init, doh!
 	 */
@@ -84,6 +83,7 @@ class CampTix_Plugin {
 		$this->options = $this->get_options();
 		$this->debug = (bool) apply_filters( 'camptix_debug', false );
 		$this->beta_features_enabled = (bool) apply_filters( 'camptix_beta_features_enabled', false );
+		$this->tmp = array();
 
 		// Capability mapping.
 		$this->caps = apply_filters( 'camptix_capabilities', array(
@@ -93,6 +93,7 @@ class CampTix_Plugin {
 			'manage_tools'     => 'manage_options',
 			'manage_options'   => 'manage_options',
 			'delete_attendees' => 'manage_options',
+			'refund_all'       => 'manage_options',
 		) );
 
 		// Explicitly disable all beta features if beta features is off.
@@ -108,9 +109,6 @@ class CampTix_Plugin {
 
 		// Our main shortcode
 		add_shortcode( 'camptix', array( $this, 'shortcode_callback' ) );
-
-		// Additional query vars.
-		add_filter( 'query_vars', array( $this, 'query_vars' ) );
 
 		// Hack to avoid object caching, see revenue report.
 		add_filter( 'get_post_metadata', array( $this, 'get_post_metadata' ), 10, 4 );
@@ -147,6 +145,7 @@ class CampTix_Plugin {
 
 		add_action( 'camptix_question_fields_init', array( $this, 'question_fields_init' ) );
 		add_action( 'camptix_init_notify_shortcodes', array( $this, 'init_notify_shortcodes' ), 9 );
+		add_action( 'camptix_init_email_templates_shortcodes', array( $this, 'init_email_templates_shortcodes' ), 9 );
 
 		// Other things required during init.
 		$this->custom_columns();
@@ -190,7 +189,11 @@ class CampTix_Plugin {
 	 * Runs during the tix_email_schedule scheduled event, processes e-mail jobs.
 	 */
 	function send_emails_batch() {
-		global $wpdb;
+		global $wpdb, $shortcode_tags;
+
+		// Sometimes Cron can run before $this->init()
+		if ( ! did_action( 'camptix_init' ) )
+			$this->init();
 
 		// Grab only one e-mail job at a time.
 		$email = get_posts( array(
@@ -219,6 +222,10 @@ class CampTix_Plugin {
 		unset( $recipients_data, $recipient );
 
 		if ( $recipients && is_array( $recipients ) && count( $recipients ) > 0 ) {
+
+			// Remove all shortcodes before sending the e-mails, but bring them back later.
+			$this->removed_shortcodes = $shortcode_tags;
+			remove_all_shortcodes();
 
 			do_action( 'camptix_init_notify_shortcodes' );
 
@@ -255,7 +262,7 @@ class CampTix_Plugin {
 							$this->log( sprintf( '%s is not a valid e-mail, removing from queue.', $attendee_email ), $email->ID, $data, 'notify' );
 						} else {
 
-							$this->notify_shortcodes_attendee_id = $attendee_id;
+							$this->tmp( 'attendee_id', $attendee_id );
 							$email_content = do_shortcode( $email->post_content );
 							$email_title = do_shortcode( $email->post_title );
 
@@ -277,8 +284,12 @@ class CampTix_Plugin {
 
 				// Clean post meta cache.
 				$this->filter_post_meta = false;
-				$this->notify_shortcodes_attendee_id = false;
+				$this->tmp( 'attendee_id', false );
 			}
+
+			// Bring back the original shortcodes.
+			$shortcode_tags = $this->removed_shortcodes;
+			$this->removed_shortcodes = array();
 		}
 
 		//update_post_meta( $email->ID, 'tix_email_recipients', $recipients );
@@ -297,13 +308,47 @@ class CampTix_Plugin {
 		}
 	}
 
+	function init_email_templates_shortcodes() {
+		// Use the same ones as the notify shortcode
+		add_shortcode( 'first_name', array( $this, 'notify_shortcode_first_name' ) );
+		add_shortcode( 'last_name', array( $this, 'notify_shortcode_last_name' ) );
+		add_shortcode( 'email', array( $this, 'notify_shortcode_email' ) );
+
+		add_shortcode( 'event_name', array( $this, 'email_template_shortcode_event_name' ) );
+		add_shortcode( 'ticket_url', array( $this, 'email_template_shortcode_ticket_url' ) );
+		add_shortcode( 'receipt', array( $this, 'email_template_shortcode_receipt' ) );
+	}
+
 	/**
-	 * Removes all shortcodes and creates some shortcodes
+	 * Returns the event name.
+	 */
+	function email_template_shortcode_event_name( $atts ) {
+		return $this->options['event_name'];
+	}
+
+	/**
+	 * Returns the ticket access/edit URL.
+	 *
+	 * @uses $this->tmp() to retrieve the ticket url
+	 */
+	function email_template_shortcode_ticket_url( $atts ) {
+		return $this->tmp( 'ticket_url' );
+	}
+
+	/**
+	 * Returns the e-mail receipt content.
+	 *
+	 * @uses $this->tmp() to retrieve receipt content.
+	 */
+	function email_template_shortcode_receipt( $atts ) {
+		return $this->tmp( 'receipt' );
+	}
+
+	/**
+	 * Creates some shortcodes
 	 * to be used with CampTix Notify.
 	 */
 	function init_notify_shortcodes() {
-		remove_all_shortcodes();
-
 		add_shortcode( 'first_name', array( $this, 'notify_shortcode_first_name' ) );
 		add_shortcode( 'last_name', array( $this, 'notify_shortcode_last_name' ) );
 		add_shortcode( 'email', array( $this, 'notify_shortcode_email' ) );
@@ -314,35 +359,35 @@ class CampTix_Plugin {
 	 * Notify shortcode: returns the attendee first name.
 	 */
 	function notify_shortcode_first_name( $atts ) {
-		if ( $this->notify_shortcodes_attendee_id )
-			return get_post_meta( $this->notify_shortcodes_attendee_id, 'tix_first_name', true );
+		if ( $this->tmp( 'attendee_id' ) )
+			return get_post_meta( $this->tmp( 'attendee_id' ), 'tix_first_name', true );
 	}
 
 	/**
 	 * Notify shortcode: returns the attendee last name.
 	 */
 	function notify_shortcode_last_name( $atts ) {
-		if ( $this->notify_shortcodes_attendee_id )
-			return get_post_meta( $this->notify_shortcodes_attendee_id, 'tix_last_name', true );
+		if ( $this->tmp( 'attendee_id' ) )
+			return get_post_meta( $this->tmp( 'attendee_id' ), 'tix_last_name', true );
 	}
 
 	/**
 	 * Notify shortcode: returns the attendee e-mail address.
 	 */
 	function notify_shortcode_email( $atts ) {
-		if ( $this->notify_shortcodes_attendee_id )
-			return get_post_meta( $this->notify_shortcodes_attendee_id, 'tix_email', true );
+		if ( $this->tmp( 'attendee_id' ) )
+			return get_post_meta( $this->tmp( 'attendee_id' ), 'tix_email', true );
 	}
 
 	/**
 	 * Notify shortcode: returns the attendee edit url
 	 */
 	function notify_shortcode_ticket_url( $atts ) {
-		if ( ! $this->notify_shortcodes_attendee_id )
+		if ( ! $this->tmp( 'attendee_id' ) )
 			return;
 
-		$edit_token = get_post_meta( $this->notify_shortcodes_attendee_id, 'tix_edit_token', true );
-		return $this->get_edit_attendee_link( $this->notify_shortcodes_attendee_id, $edit_token );
+		$edit_token = get_post_meta( $this->tmp( 'attendee_id' ), 'tix_edit_token', true );
+		return $this->get_edit_attendee_link( $this->tmp( 'attendee_id' ), $edit_token );
 	}
 
 	/**
@@ -392,8 +437,13 @@ class CampTix_Plugin {
 	 * Get a CSS file, @todo make it removable through an option.
 	 */
 	function enqueue_scripts() {
+
 		wp_register_style( 'camptix', plugins_url( 'camptix.css', __FILE__ ), array(), $this->css_version );
-		wp_register_script( 'camptix', plugins_url( 'camptix.js', __FILE__ ), array( 'jquery' ), $this->css_version );
+		wp_register_script( 'camptix', plugins_url( 'camptix.js', __FILE__ ), array( 'jquery' ), $this->js_version );
+
+		wp_localize_script( 'camptix', 'camptix_l10n', array(
+			'enterEmail' => __( 'Please enter the e-mail addresses in the forms above.', 'camptix' ),
+		) );
 
 		// Let's play by the rules and print this in the <head> section.
 		if ( $this->options['usecss'] ) {
@@ -686,11 +736,9 @@ class CampTix_Plugin {
 		if ( ! empty( $_REQUEST['post_type' ] ) && ! in_array( $_REQUEST['post_type'], array( 'tix_attendee', 'tix_ticket' ) ) )
 			return;
 
-		$user = wp_get_current_user();
-
 		// If first time editing, disable advanced items by default.
-		if ( false === get_user_option( 'manageedit-tix_attendeecolumnshidden' ) ) {
-			update_user_option( $user->ID, 'manageedit-tix_attendeecolumnshidden', array(
+		if ( false === $this->get_user_option( 'manageedit-tix_attendeecolumnshidden' ) ) {
+			$this->update_user_option( get_current_user_id(), 'manageedit-tix_attendeecolumnshidden', array(
 				'tix_order_total',
 				'tix_ticket_price',
 				'tix_reservation',
@@ -698,12 +746,39 @@ class CampTix_Plugin {
 			), true );
 		}
 
-		if ( false === get_user_option( 'manageedit-tix_ticketcolumnshidden' ) ) {
-			update_user_option( $user->ID, 'manageedit-tix_ticketcolumnshidden', array(
+		if ( false === $this->get_user_option( 'manageedit-tix_ticketcolumnshidden' ) ) {
+			$this->update_user_option( get_current_user_id(), 'manageedit-tix_ticketcolumnshidden', array(
 				'tix_purchase_count',
 				'tix_reserved',
 			), true );
 		}
+	}
+
+	/**
+	 * Filterable call to get_user_option
+	 */
+	function get_user_option( $option_name, $user_id = 0 ) {
+		if ( empty( $user_id ) )
+			$user_id = get_current_user_id();
+
+		$value = apply_filters( 'camptix_get_user_option', null, $option_name, $user_id );
+
+		if ( is_null( $value ) )
+			$value = get_user_option( $option_name, $user_id );
+
+		return $value;
+	}
+
+	/**
+	 * Filterable call to update_user_option
+	 */
+	function update_user_option( $user_id, $option_name, $option_value, $global = false ) {
+		$value = apply_filters( 'camptix_update_user_option', null, $user_id, $option_name, $option_value, $global );
+
+		if ( is_null( $value ) )
+			$value = update_user_option( $user_id, $option_name, $option_value, $global );
+
+		return $value;
 	}
 
 	/**
@@ -715,7 +790,7 @@ class CampTix_Plugin {
 		$questions = get_posts( array(
 			'post_type' => 'tix_question',
 			'post_status' => 'publish',
-			'posts_per_page' => -1,
+			'posts_per_page' => 100,
 		) );
 
 		return $questions;
@@ -862,6 +937,7 @@ class CampTix_Plugin {
 				'edit_post' => $this->caps['manage_attendees'],
 				'delete_post' => $this->caps['delete_attendees'],
 				'read_post' => $this->caps['manage_attendees'],
+				'create_posts' => 'do_not_allow',
 			),
 		) );
 
@@ -997,8 +1073,15 @@ class CampTix_Plugin {
 			'refund_all_enabled' => false,
 			'archived' => false,
 			'payment_methods' => array(),
-			'usecss' => true,
-		) );
+
+			'email_template_single_purchase' => __( "Hi there!\n\nYou have purchased the following ticket:\n\n[receipt]\n\nYou can edit the information for the purchased ticket at any time before the event, by visiting the following link:\n\n[ticket_url]\n\nLet us know if you have any questions!", 'camptix' ),
+			'email_template_multiple_purchase' => __( "Hi there!\n\nThank you so much for purchasing a ticket and hope to see you soon at our event. You can edit your information at any time before the event, by visiting the following link:\n\n[ticket_url]\n\nLet us know if you have any questions!", 'camptix' ),
+			'email_template_multiple_purchase_receipt' => __( "Hi there!\n\nYou have purchased the following tickets:\n\n[receipt]\n\nYou can edit the information for all the purchased tickets at any time before the event, by visiting the following link:\n\n[ticket_url]\n\nLet us know if you have any questions!", 'camptix' ),
+			'email_template_pending_succeeded' => __( "Hey there!\n\nYour payment for [event_name] has been completed, looking forward to seeing you at the event! You can access and change your tickets information by visiting the following link:\n\n[ticket_url]\n\nLet us know if you need any help!", 'camptix' ),
+			'email_template_pending_failed' => __( "Hey there!\n\nWe're so sorry, but it looks like your payment for [event_name] has failed! Please check your payment transactions for more details. If you still wish to attend the event, feel free to purchase a new ticket using the following link:\n\n[ticket_url]\n\nLet us know if you need any help!", 'camptix' ),
+			'email_template_single_refund' => __( "Hey there!\n\nYour refund for [event_name] has been completed. If you change your mind and still wish to attend the event, feel free to purchase a new ticket using the following link:\n\n[ticket_url]\n\nLet us know if you need any help!", 'camptix' ),
+			'email_template_multiple_refund' => __( "Hey there!\n\nYour ticket for [event_name] has been refunded. If you change your mind and still wish to attend the event, feel free to purchase a new ticket using the following link:\n\n[ticket_url]\n\nLet us know if you need any help!", 'camptix' ),
+	) );
 	}
 
 	/**
@@ -1016,10 +1099,6 @@ class CampTix_Plugin {
 		// Allow plugins to hi-jack or read the options.
 		$options = apply_filters( 'camptix_options', $options );
 
-		/*$options['version'] = 20121226;
-		update_option( 'camptix_options', $options );
-		die();/**/
-
 		// Fresh installs require no upgrades.
 		if ( $options['version'] == 0 ) {
 			$options['version'] = $this->version;
@@ -1027,41 +1106,42 @@ class CampTix_Plugin {
 		}
 
 		// Let's see if we need to run an upgrade scenario.
-		if ( $options['version'] < $this->version ) {
-
-			// Lock to prevent concurrent upgrades.
-			$doing_upgrade = get_option( 'camptix_doing_upgrade', false );
-
-			if ( ! $doing_upgrade ) {
-				update_option( 'camptix_doing_upgrade', true );
-				$new_version = $this->upgrade( $options['version'] );
-				delete_option( 'camptix_doing_upgrade' );
-
-				// Read options again in case of update options.
-				$options = array_merge( $default_options, get_option( 'camptix_options', array() ) );
-				$options['version'] = $new_version;
-				update_option( 'camptix_options', $options );
-			}
-
-		}
-
-		if ( current_user_can( $this->caps['manage_options'] ) && isset( $_GET['tix_reset_version'] ) ) {
-			$options['version'] = 0;
-			update_option( 'camptix_options', $options );
-		}
-
-		if ( current_user_can( $this->caps['manage_options'] ) && isset( $_GET['tix_delete_options'] ) ) {
-			delete_option( 'camptix_options' );
-			$options = $default_options;
+		if ( apply_filters( 'camptix_enable_automatic_upgrades', true ) && $options['version'] < $this->version ) {
+			$this->upgrade( $options['version'] );
 		}
 
 		return $options;
 	}
 
-	/**
-	 * Runs when get_option decides that the current version is out of date.
+	/*
+	 * Controls the application logic of running an upgrade
 	 */
-	function upgrade( $from ) {
+	function upgrade( $db_version ) {
+		$status = false;
+		$doing_upgrade = get_option( 'camptix_doing_upgrade', false );
+
+		if ( $doing_upgrade ) {
+			$this->log( 'Upgrade already in progress, aborting concurrent attempt.', 0, null, 'upgrade' );
+		} else {
+			// Lock to prevent concurrent upgrades.
+			update_option( 'camptix_doing_upgrade', true );
+
+			$new_version = $this->run_upgrade_parts( $db_version );
+			$options = array_merge( $this->get_default_options(), get_option( 'camptix_options', array() ) );
+			$options['version'] = $new_version;
+			update_option( 'camptix_options', $options );
+			$status = true;
+
+			delete_option( 'camptix_doing_upgrade' );
+		}
+
+		return $status;
+	}
+
+	/**
+	 * Processes the business logic of an upgrade
+	 */
+	protected function run_upgrade_parts( $from ) {
 		set_time_limit( 60*60 ); // Give it an hour to update.
 		$this->log( 'Running upgrade script.', 0, null, 'upgrade' );
 
@@ -1347,6 +1427,19 @@ class CampTix_Plugin {
 					$payment_method_obj->payment_settings_fields();
 				}
 				break;
+			case 'email-templates':
+				add_settings_section( 'general', __( 'E-mail Templates', 'camptix' ), array( $this, 'menu_setup_section_email_templates' ), 'camptix_options' );
+				$this->add_settings_field_helper( 'email_template_single_purchase', __( 'Single purchase', 'camptix' ), 'field_textarea' );
+				$this->add_settings_field_helper( 'email_template_multiple_purchase', __( 'Multiple purchase', 'camptix' ), 'field_textarea' );
+				$this->add_settings_field_helper( 'email_template_multiple_purchase_receipt', __( 'Multiple purchase (receipt)', 'camptix' ), 'field_textarea' );
+				$this->add_settings_field_helper( 'email_template_pending_succeeded', __( 'Pending Payment Succeeded', 'camptix' ), 'field_textarea' );
+				$this->add_settings_field_helper( 'email_template_pending_failed', __( 'Pending Payment Failed', 'camptix' ), 'field_textarea' );
+				$this->add_settings_field_helper( 'email_template_single_refund', __( 'Single Refund', 'camptix' ), 'field_textarea' );
+				$this->add_settings_field_helper( 'email_template_multiple_refund', __( 'Multiple Refund', 'camptix' ), 'field_textarea' );
+
+				// Add a reset templates button
+				add_action( 'camptix_setup_buttons', array( $this, 'setup_buttons_reset_templates' ) );
+				break;
 			case 'beta':
 
 				if ( ! $this->beta_features_enabled )
@@ -1362,9 +1455,12 @@ class CampTix_Plugin {
 					__( "This will allows your customers to refund their tickets purchase by filling out a simple refund form.", 'camptix' )
 				);
 
-				$this->add_settings_field_helper( 'refund_all_enabled', __( 'Enable Refund All', 'camptix' ), 'field_yesno', false,
-					__( "Allows to refund all purchased tickets by an admin via the Tools menu.", 'camptix' )
-				);
+				if ( current_user_can( $this->caps['refund_all'] ) ) {
+					$this->add_settings_field_helper( 'refund_all_enabled', __( 'Enable Refund All', 'camptix' ), 'field_yesno', false,
+						__( "Allows to refund all purchased tickets by an admin via the Tools menu.", 'camptix' )
+					);
+				}
+
 				$this->add_settings_field_helper( 'archived', __( 'Archived Event', 'camptix' ), 'field_yesno', false,
 					__( "Archived events are read-only.", 'camptix' )
 				);
@@ -1375,6 +1471,10 @@ class CampTix_Plugin {
 
 	function menu_setup_section_beta() {
 		echo '<p>' . __( 'Beta features are things that are being worked on in CampTix, but are not quite finished yet. You can try them out, but we do not recommend doing that in a live environment on a real event. If you have any kind of feedback on any of the beta features, please let us know.', 'camptix' ) . '</p>';
+	}
+
+	function menu_setup_section_email_templates() {
+		echo '<p>' . __( 'Customize your confirmation e-mail templates. You can use the following shortcodes inside the message: [event_name], [ticket_url], and [receipt].', 'camptix' ) . '</p>';
 	}
 
 	function menu_setup_section_general() {
@@ -1390,13 +1490,17 @@ class CampTix_Plugin {
 
 		$args = array(
 			'name' => sprintf( 'camptix_options[%s]', $key ),
-			'value' => $this->options[$key],
+			'value' => ( ! empty( $this->options[ $key ] ) ) ? $this->options[ $key ] : null,
 		);
 
 		if ( $description )
 			$args['description'] = $description;
 
 		add_settings_field( $key, $title, array( $this, $callback_method ), 'camptix_options', $section, $args );
+	}
+
+	function setup_buttons_reset_templates() {
+		submit_button( __( 'Reset Default', 'camptix' ), 'secondary', 'tix-reset-templates', false );
 	}
 
 	/**
@@ -1445,6 +1549,26 @@ class CampTix_Plugin {
 					$output['payment_methods'][ $key ] = (bool) $input['payment_methods'][ $key ];
 		}
 
+		// E-mail templates
+		$email_templates = array(
+			'single_purchase',
+			'multiple_purchase',
+			'multiple_purchase_receipt',
+			'pending_succeeded',
+			'pending_failed',
+			'single_refund',
+			'multiple_refund',
+		);
+
+		foreach ( $email_templates as $template )
+			if ( isset( $input[ 'email_template_' . $template ] ) )
+				$output[ 'email_template_' . $template ] = $input[ 'email_template_' . $template ];
+
+		// If the Reset Defaults button was hit
+		if ( isset( $_POST['tix-reset-templates'] ) )
+			foreach ( $email_templates as $template )
+				unset( $output[ 'email_template_' . $template ] );
+
 		$current_user = wp_get_current_user();
 		$log_data = array(
 			'old'      => $this->options,
@@ -1473,6 +1597,12 @@ class CampTix_Plugin {
 	function field_text( $args ) {
 		?>
 		<input type="text" name="<?php echo esc_attr( $args['name'] ); ?>" value="<?php echo esc_attr( $args['value'] ); ?>" class="regular-text" />
+		<?php
+	}
+
+	function field_textarea( $args ) {
+		?>
+		<textarea class="large-text" rows="5" name="<?php echo esc_attr( $args['name'] ); ?>"><?php echo esc_textarea( $args['value'] ); ?></textarea>
 		<?php
 	}
 
@@ -1514,7 +1644,7 @@ class CampTix_Plugin {
 		</div>
 
 		<?php if ( isset( $args['description'] ) ) : ?>
-		<p class="description"><?php echo $args['description']; ?></p>
+		<p class="description"><?php echo wp_kses_post( $args['description'] ); ?></p>
 		<?php endif; ?>
 		<?php
 	}
@@ -1562,7 +1692,7 @@ class CampTix_Plugin {
 			),
 			'JPY' => array(
 				'label' => __( 'Japanese Yen', 'camptix' ),
-				'format' => '&#165; %s',
+				'format' => '¥ %s',
 			),
 			'USD' => array(
 				'label' => __( 'U.S. Dollar', 'camptix' ),
@@ -1586,31 +1716,31 @@ class CampTix_Plugin {
 			),
 			'SEK' => array(
 				'label' => __( 'Swedish Krona', 'camptix' ),
-				'format' => '%s &#107;&#114;',
+				'format' => '%s kr',
 			),
 			'DKK' => array(
 				'label' => __( 'Danish Krone', 'camptix' ),
-				'format' => '%s &#107;&#114;',
+				'format' => '%s kr',
 			),
 			'PLN' => array(
 				'label' => __( 'Polish Zloty', 'camptix' ),
-				'format' => '%s &#122;&#322;',
+				'format' => '%s Zł',
 			),
 			'NOK' => array(
 				'label' => __( 'Norwegian Krone', 'camptix' ),
-				'format' => '%s &#107;&#114;',
+				'format' => '%s kr',
 			),
 			'HUF' => array(
 				'label' => __( 'Hungarian Forint', 'camptix' ),
-				'format' => '%s &#70;&#116;',
+				'format' => '%s FT',
 			),
 			'CZK' => array(
 				'label' => __( 'Czech Koruna', 'camptix' ),
-				'format' => '%s &#75;&#269;',
+				'format' => '%s Kč',
 			),
 			'ILS' => array(
 				'label' => __( 'Israeli New Sheqel', 'camptix' ),
-				'format' => '&#8362; %s',
+				'format' => '₪ %s',
 			),
 			'MXN' => array(
 				'label' => __( 'Mexican Peso', 'camptix' ),
@@ -1618,23 +1748,23 @@ class CampTix_Plugin {
 			),
 			'BRL' => array(
 				'label' => __( 'Brazilian Real', 'camptix' ),
-				'format' => '&#82;&#36; %s',
+				'format' => 'R$ %s',
 			),
 			'MYR' => array(
 				'label' => __( 'Malaysian Ringgit', 'camptix' ),
-				'format' => '&#82;&#77; %s',
+				'format' => 'RM %s',
 			),
 			'PHP' => array(
 				'label' => __( 'Philippine Peso', 'camptix' ),
-				'format' => '&#8369; %s',
+				'format' => '₱ %s',
 			),
 			'TWD' => array(
 				'label' => __( 'New Taiwan Dollar', 'camptix' ),
-				'format' => '&#78;&#84;&#36; %s',
+				'format' => 'NT$ %s',
 			),
 			'THB' => array(
 				'label' => __( 'Thai Baht', 'camptix' ),
-				'format' => '&#3647; %s',
+				'format' => '฿ %s',
 			),
 			'TRY' => array(
 				'label' => __( 'Turkish Lira', 'camptix' ),
@@ -1740,8 +1870,11 @@ class CampTix_Plugin {
 				<?php
 					settings_fields( 'camptix_options' );
 					do_settings_sections( 'camptix_options' );
-					submit_button();
 				?>
+				<p class="submit">
+					<?php submit_button( '', 'primary', 'submit', false ); ?>
+					<?php do_action( 'camptix_setup_buttons' ); ?>
+				</p>
 			</form>
 			<?php if ( $this->debug ) : ?>
 			<pre><?php
@@ -1773,6 +1906,7 @@ class CampTix_Plugin {
 		$sections = array(
 			'general' => __( 'General', 'camptix' ),
 			'payment' => __( 'Payment', 'camptix' ),
+			'email-templates' => __( 'E-mail Templates', 'camptix' ),
 		);
 
 		if ( $this->beta_features_enabled )
@@ -1835,7 +1969,7 @@ class CampTix_Plugin {
 			'notify' => __( 'Notify', 'camptix' ),
 		);
 
-		if ( current_user_can( $this->caps['manage_options'] ) && ! $this->options['archived'] && $this->options['refund_all_enabled'] )
+		if ( current_user_can( $this->caps['refund_all'] ) && ! $this->options['archived'] && $this->options['refund_all_enabled'] )
 			$sections['refund'] = __( 'Refund', 'camptix' );
 
 		foreach ( $sections as $section_key => $section_caption ) {
@@ -1888,7 +2022,7 @@ class CampTix_Plugin {
 		<?php
 			$fields = $this->get_available_summary_fields();
 			$summary = $this->get_summary( $summarize_by );
-			$summary_title = $fields[$summarize_by];
+			$summary_title = $fields[ $summarize_by ];
 			$alt = '';
 
 			$rows = array();
@@ -1922,7 +2056,7 @@ class CampTix_Plugin {
 
 			$fields = $this->get_available_summary_fields();
 			$summary = $this->get_summary( $summarize_by );
-			$summary_title = $fields[$summarize_by];
+			$summary_title = $fields[ $summarize_by ];
 			$filename = sprintf( 'camptix-summary-%s-%s.csv', sanitize_title_with_dashes( $summary_title ), date( 'Y-m-d' ) );
 
 			header( 'Content-Type: text/csv' );
@@ -2165,8 +2299,18 @@ class CampTix_Plugin {
 	}
 
 	function menu_tools_revenue() {
-		global $post;
+		$results = $this->generate_revenue_report_data();
 
+		if ( $results['totals']->revenue != $results['actual_total'] ) {
+			printf( '<div class="updated settings-error below-h2"><p>%s</p></div>', sprintf( __( '<strong>Woah!</strong> The revenue total does not match with the transactions total. The actual total is: <strong>%s</strong>. Something somewhere has gone wrong, please report this.', 'camptix' ), $this->append_currency( $results['actual_total'] ) ) );
+		}
+
+		$this->table( $results['rows'], 'widefat tix-revenue-summary' );
+		printf( '<p><span class="description">' . __( 'Revenue report generated in %s seconds.', 'camptix' ) . '</span></p>', $results['run_time'] );
+	}
+
+	function generate_revenue_report_data() {
+		global $post;
 		$start_time = microtime( true );
 
 		$tickets = array();
@@ -2291,20 +2435,23 @@ class CampTix_Plugin {
 			__( 'Discounted', 'camptix' ) => $this->append_currency( $totals->discounted ),
 			__( 'Revenue', 'camptix' ) => $this->append_currency( $totals->revenue ),
 		);
-
-		if ( $totals->revenue != $actual_total ) {
-			printf( '<div class="updated settings-error below-h2"><p>%s</p></div>', sprintf( __( '<strong>Woah!</strong> The revenue total does not match with the transactions total. The actual total is: <strong>%s</strong>. Something somewhere has gone wrong, please report this.', 'camptix' ), $this->append_currency( $actual_total ) ) );
-		}
-
-		$this->table( $rows, 'widefat tix-revenue-summary' );
-		printf( '<p><span class="description">' . __( 'Revenue report generated in %s seconds.', 'camptix' ) . '</span></p>', number_format( microtime( true ) - $start_time, 3 ) );
-
+		
 		// Update stats
 		$this->update_stats( 'sold', $totals->sold );
 		$this->update_stats( 'remaining', $totals->remaining );
 		$this->update_stats( 'subtotal', $totals->sub_total );
 		$this->update_stats( 'discounted', $totals->discounted );
 		$this->update_stats( 'revenue', $totals->revenue );
+
+		$results = array(
+			'totals' => $totals,
+			'actual_total' => $actual_total,
+			'rows' => $rows,
+			'run_time' => number_format( microtime( true ) - $start_time, 3 ),
+		);
+
+		$this->log( sprintf( 'Revenue report data generated in %s seconds', $results['run_time'] ) );
+		return $results;
 	}
 
 	/**
@@ -2509,9 +2656,9 @@ class CampTix_Plugin {
 
 			// If everything went well.
 			if ( count( $errors ) == 0 && isset( $_POST['tix_notify_submit'] ) && $_POST['tix_notify_submit'] ) {
-				$tickets = (array) $_POST['tix_notify_tickets'];
-				$subject = $_POST['tix_notify_subject'];
-				$body = $_POST['tix_notify_body'];
+				$tickets = array_map( 'absint', (array) $_POST['tix_notify_tickets'] );
+				$subject = sanitize_text_field( wp_kses_post( stripslashes( $_POST['tix_notify_subject'] ) ) );
+				$body = wp_kses_post( stripslashes( $_POST['tix_notify_body'] ) );
 				$recipients = array();
 
 				$paged = 1;
@@ -2565,12 +2712,18 @@ class CampTix_Plugin {
 						add_settings_error( 'camptix', false, $error );
 
 				// Keep form data.
-				$form_data['subject'] = stripslashes( $_POST['tix_notify_subject'] );
-				$form_data['body'] = stripslashes( $_POST['tix_notify_body'] );
+				$form_data['subject'] = wp_kses_post( stripslashes( $_POST['tix_notify_subject'] ) );
+				$form_data['body'] = wp_kses_post( stripslashes( $_POST['tix_notify_body'] ) );
 				if ( isset( $_POST['tix_notify_tickets'] ) )
-					$form_data['tickets'] = $_POST['tix_notify_tickets'];
+					$form_data['tickets'] = array_map( 'absint', (array) $_POST['tix_notify_tickets'] );
 			}
 		}
+
+		// Remove all standard shortcodes.
+		$this->removed_shortcodes = $shortcode_tags;
+		remove_all_shortcodes();
+
+		do_action( 'camptix_init_notify_shortcodes' );
 		?>
 		<?php settings_errors( 'camptix' ); ?>
 		<form method="post" action="<?php echo esc_url( add_query_arg( 'tix_notify_attendees', 1 ) ); ?>">
@@ -2601,7 +2754,6 @@ class CampTix_Plugin {
 						<th scope="row"><?php _e( 'Message', 'camptix' ); ?></th>
 						<td>
 							<textarea rows="10" name="tix_notify_body" id="tix-notify-body" class="large-text"><?php echo esc_textarea( $form_data['body'] ); ?></textarea><br />
-							<?php do_action( 'camptix_init_notify_shortcodes' ); ?>
 							<?php if ( ! empty( $shortcode_tags ) ) : ?>
 							<p class=""><?php _e( 'You can use the following shortcodes:', 'camptix' ); ?>
 								<?php foreach ( $shortcode_tags as $key => $tag ) : ?>
@@ -2622,12 +2774,12 @@ class CampTix_Plugin {
 						) );
 
 						if ( $attendees_ids )
-							$this->notify_shortcodes_attendee_id = array_shift( $attendees_ids );
+							$this->tmp( 'attendee_id', array_shift( $attendees_ids ) );
 
 						$subject = do_shortcode( $form_data['subject'] );
 						$content = do_shortcode( $form_data['body'] );
 
-						unset( $this->notify_shortcodes_attendee_id );
+						$this->tmp( 'attendee_id', false );
 					?>
 					<tr>
 						<th scope="row">Preview</th>
@@ -2655,6 +2807,11 @@ class CampTix_Plugin {
 		</form>
 
 		<?php
+
+		// Bring back the original shortcodes.
+		$shortcode_tags = $this->removed_shortcodes;
+		$this->removed_shortcodes = array();
+
 		$history_query = new WP_Query( array(
 			'post_type' => 'tix_email',
 			'post_status' => 'any',
@@ -2679,11 +2836,15 @@ class CampTix_Plugin {
 	}
 
 	function menu_tools_refund() {
-		if ( ! $this->options['refund_all_enabled'] )
+		if ( ! current_user_can( $this->caps['refund_all'] ) || ! $this->options['refund_all_enabled'] )
 			return;
 
 		if ( get_option( 'camptix_doing_refunds', false ) )
 			return $this->menu_tools_refund_busy();
+
+		if ( ! $this->payment_modules_support_refund_all() )
+			return $this->menu_tools_refund_unavailable();
+
 		?>
 		<form method="post" action="<?php echo esc_url( add_query_arg( 'tix_refund_all', 1 ) ); ?>">
 			<table class="form-table">
@@ -2713,9 +2874,26 @@ class CampTix_Plugin {
 	 * Runs before the page markup is printed so can add settings errors.
 	 */
 	function menu_tools_refund_admin_init() {
-		if ( ! current_user_can( $this->caps['manage_tools'] ) || 'refund' != $this->get_tools_section() )
+		if ( ! current_user_can( $this->caps['refund_all'] ) || 'refund' != $this->get_tools_section() )
 			return;
 
+		// Display results of completed refund-all job
+		$total_results = get_option( 'camptix_refund_all_results' );
+		if ( isset( $total_results['status'] ) && 'completed' == $total_results['status'] ) {
+			add_settings_error(
+				'camptix',
+				'none',
+				sprintf(
+					__( 'CampTix has finished attempting to refund all transactions. The results were:<br /><br /> &bull;Succeeded: %s<br /> &bull;Failed: %s', 'camptix' ),
+					$total_results['succeeded'],
+					$total_results['failed']
+				),
+				'updated'
+			);	// not using proper <p> and <ul> markup because settings_errors() forces the entire message inside a <p>, which would be invalid
+			delete_option( 'camptix_refund_all_results' );
+		}
+
+		// Process form submission
 		if ( ! isset( $_POST['tix_refund_all_submit'] ) )
 			return;
 
@@ -2730,7 +2908,7 @@ class CampTix_Plugin {
 		);
 
 		foreach ( $checkboxes as $checkbox ) {
-			if ( ! isset( $_POST[$checkbox] ) || $_POST[$checkbox] != '1' ) {
+			if ( ! isset( $_POST[ $checkbox ] ) || $_POST[ $checkbox ] != '1' ) {
 				add_settings_error( 'camptix', 'none', __( 'Looks like you have missed a checkbox or two. Try again!', 'camptix' ), 'error' );
 				return;
 			}
@@ -2739,6 +2917,7 @@ class CampTix_Plugin {
 		$current_user = wp_get_current_user();
 		$this->log( sprintf( 'Setting all transactions to refund, thanks %s.', $current_user->user_login ), 0, null, 'refund' );
 		update_option( 'camptix_doing_refunds', true );
+		update_option( 'camptix_refund_all_results', array( 'status' => 'pending', 'succeeded' => 0, 'failed' => 0 ) );
 
 		$count = 0;
 		$paged = 1;
@@ -2786,20 +2965,51 @@ class CampTix_Plugin {
 		?>
 		<p><?php printf( __( 'A refund job is in progress, with %d attendees left in the queue. Next run in %d seconds.', 'camptix' ), $found_posts, wp_next_scheduled( 'tix_scheduled_every_ten_minutes' ) - time() ); ?></p>
 		<?php
+		// @todo sometimes the time returned is a negative value, then fixes next load
+		// @todo still says refund job in progress every with 0 attendees left. then clears next run. probably b/c last batch doesn't check to see if it's the last one
+	}
+
+	/*
+	 * Returns true if at least one of the enabled payment modules supports refunding all tickets
+	 */
+	function payment_modules_support_refund_all() {
+		$supported = false;
+		$payment_methods = $this->get_enabled_payment_methods();
+
+		if ( $payment_methods ) {
+			foreach ( $payment_methods as $key => $name ) {
+				$method = $this->get_payment_method_by_id( $key );
+
+				if ( $method && $method->supports_feature( 'refund-all' ) ) {		// test off and on. not working right now
+					$supported = true;
+					break;
+				}
+			}
+		}
+
+		return $supported;
+	}
+
+	/**
+	 * Runs on Refund tab if none of the current payment modules support refunding all tickets
+	 */
+	function menu_tools_refund_unavailable() {
+		?>
+		<p><?php echo __( 'None of the enabled payment modules support refunding all tickets.', 'camptix' ); ?></p>
+		<?php
 	}
 
 	/**
 	 * Runs by WP_Cron, refunds attendees set to refund.
-	 * @todo do :)
 	 */
 	function process_refund_all() {
-		die( 'needs implementation' );
 		if ( $this->options['archived'] )
 			return;
 
 		if ( ! get_option( 'camptix_doing_refunds', false ) )
 			return;
 
+		$total_results = get_option( 'camptix_refund_all_results' );
 		$attendees = get_posts( array(
 			'post_type' => 'tix_attendee',
 			'posts_per_page' => 50,
@@ -2817,19 +3027,17 @@ class CampTix_Plugin {
 
 		if ( ! $attendees ) {
 			$this->log( 'Refund all job complete.', 0, null, 'refund' );
+			$total_results['status'] = 'completed';
 			delete_option( 'camptix_doing_refunds' );
 		}
 
 		foreach ( $attendees as $attendee ) {
-			// If another cron instace has this, or same txn has been refunded.
+			// If another cron instance has this, or same txn has been refunded.
 			if ( ! get_post_meta( $attendee->ID, 'tix_pending_refund', true ) )
 				continue;
-
 			delete_post_meta( $attendee->ID, 'tix_pending_refund' );
 			$transaction_id = get_post_meta( $attendee->ID, 'tix_transaction_id', true );
-
 			if ( $transaction_id && ! empty( $transaction_id ) && trim( $transaction_id ) ) {
-
 				// Related attendees have the same transaction id, we'll use this query to find them.
 				$rel_attendees_query = array(
 					'post_type' => 'tix_attendee',
@@ -2852,37 +3060,53 @@ class CampTix_Plugin {
 					),
 				);
 
-				$payload = array(
-					'METHOD' => 'RefundTransaction',
-					'TRANSACTIONID' => $transaction_id,
-					'REFUNDTYPE' => 'Full',
-				);
+				$payment_method = get_post_meta( $attendee->ID, 'tix_payment_method', true );
+				$payment_method_obj = $this->get_payment_method_by_id( $payment_method );
+				// Bail if a payment method does not exist.
+				if ( ! $payment_method_obj ) {
+					$this->log( "Couldn't instantiate payment module for attendee during refund-all batch.", $attendee->ID, null, 'refund' );
+					$total_results['failed']++;
+					continue;
+				}
 
-				// Tell PayPal to refund our transaction.
-				$txn = wp_parse_args( wp_remote_retrieve_body( $this->paypal_request( $payload ) ) );
-				if ( isset( $txn['ACK'], $txn['REFUNDTRANSACTIONID'] ) && $txn['ACK'] == 'Success' ) {
-					$this->log( sprintf( 'Refunded transaction %s.', $transaction_id ), $attendee->ID, $txn, 'refund' );
+				// Attempt to process the refund transaction
+				$payment_token = get_post_meta( $attendee->ID, 'tix_payment_token', true );
+				if ( ! $payment_token ) {
+					$this->log( "Invalid payment token for attendee during refund-all batch.", $attendee->ID, $payment_token, 'refund' );
+					$total_results['failed']++;
+					continue;
+				}
+
+				$result = $payment_method_obj->send_refund_request( $payment_token );
+
+				if ( CampTix_Plugin::PAYMENT_STATUS_REFUNDED == $result['status'] ) {
+					$this->log( sprintf( 'Refunded transaction %s.', $transaction_id ), $attendee->ID, $result, 'refund' );
 					$attendee->post_status = 'refund';
 					wp_update_post( $attendee );
+					update_post_meta( $attendee->ID, 'tix_refund_transaction_id', $result['refund_transaction_id'] );
+					update_post_meta( $attendee->ID, 'tix_refund_transaction_details', $result['refund_transaction_details'] );
+					$total_results['succeeded']++;
 
 					// Remove refund flag and set status to refunded for related attendees.
 					while ( $rel_attendees = get_posts( $rel_attendees_query ) ) {
 						foreach ( $rel_attendees as $rel_attendee ) {
-							$this->log( sprintf( 'Refunded transaction %s.', $transaction_id ), $rel_attendee->ID, $txn, 'refund' );
+							$this->log( sprintf( 'Refunded transaction %s.', $transaction_id ), $rel_attendee->ID, $result, 'refund' );
 							delete_post_meta( $rel_attendee->ID, 'tix_pending_refund' );
 							$rel_attendee->post_status = 'refund';
 							wp_update_post( $rel_attendee );
+							update_post_meta( $attendee->ID, 'tix_refund_transaction_id', $result['refund_transaction_id'] );
+							update_post_meta( $attendee->ID, 'tix_refund_transaction_details', $result['refund_transaction_details'] );
 							clean_post_cache( $rel_attendee->ID );
 						}
 					}
-
 				} else {
-					$this->log( sprintf( 'Could not refund %s.', $transaction_id ), $attendee->ID, $txn, 'refund' );
+					$this->log( sprintf( 'Could not refund %s.', $transaction_id ), $attendee->ID, $result, 'refund' );
+					$total_results['failed']++;
 
 					// Let other attendees know they can not be refunded too.
 					while ( $rel_attendees = get_posts( $rel_attendees_query ) ) {
 						foreach ( $rel_attendees as $rel_attendee ) {
-							$this->log( sprintf( 'Could not refund %s.', $transaction_id ), $rel_attendee->ID, $txn, 'refund' );
+							$this->log( sprintf( 'Could not refund %s.', $transaction_id ), $rel_attendee->ID, $result, 'refund' );
 							delete_post_meta( $rel_attendee->ID, 'tix_pending_refund' );
 							clean_post_cache( $rel_attendee->ID );
 						}
@@ -2890,8 +3114,11 @@ class CampTix_Plugin {
 				}
 			} else {
 				$this->log( 'No transaction id for this attendee, not refunding.', $attendee->ID, null, 'refund' );
+				$total_results['failed']++;
 			}
 		}
+
+		update_option( 'camptix_refund_all_results', $total_results );
 	}
 
 	/**
@@ -2973,6 +3200,11 @@ class CampTix_Plugin {
 							$edit_link = $this->get_edit_attendee_link( $post->ID, $edit_token );
 						?>
 						<span><a href="<?php echo esc_url( $edit_link ); ?>"><?php _e( 'Edit Attendee Info', 'camptix' ); ?></a></span>
+					</div>
+
+					<div class="misc-pub-section">
+						<input id="tix_privacy_<?php esc_attr( $post->ID ); ?>" name="tix_privacy" type="checkbox" <?php checked( get_post_meta( $post->ID, 'tix_privacy', true ), 'private' ); ?> />
+						<label for="tix_privacy_<?php esc_attr( $post->ID ); ?>"><?php _e( 'Hide from public attendees list', 'camptix' ); ?></label>
 					</div>
 
 				</div><!-- #misc-publishing-actions -->
@@ -3425,6 +3657,7 @@ class CampTix_Plugin {
 			<!-- Add Questions to the List -->
 			<script>
 			(function($){
+			$(document).trigger( 'load-questions.camptix' );
 			<?php foreach ( $questions as $question ) : ?>
 				camptix.questions.add( new camptix.models.Question( {
 					post_id: <?php echo esc_js( $question->ID ); ?>,
@@ -3624,24 +3857,25 @@ class CampTix_Plugin {
 		if ( ! isset( $_POST['action'] ) || 'editpost' != $_POST['action'] )
 			return;
 
-		/**
-		 * @todo figure out security issue with .org
-		 */
 		// Security check.
-		// $nonce_action = 'update-tix_ticket_' . $post_id; // see edit-form-advanced.php
-		// check_admin_referer( $nonce_action );
+		$nonce_action = 'update-post_' . $post_id; // http://core.trac.wordpress.org/changeset/21504
+		check_admin_referer( $nonce_action );
 
 		if ( isset( $_POST['tix_price'] ) )
-			update_post_meta( $post_id, 'tix_price', $_POST['tix_price'] );
+			update_post_meta( $post_id, 'tix_price', floatval( $_POST['tix_price'] ) );
 
 		if ( isset( $_POST['tix_quantity'] ) )
 			update_post_meta( $post_id, 'tix_quantity', intval( $_POST['tix_quantity'] ) );
 
-		if ( isset( $_POST['tix_start'] ) )
+		if ( isset( $_POST['tix_start'] ) ) {
+			$_POST['tix_start'] = preg_match( '/^\d{4}\-\d{2}\-\d{2}$/', $_POST['tix_start'] ) ? $_POST['tix_start'] : '';
 			update_post_meta( $post_id, 'tix_start', $_POST['tix_start'] );
+		}
 
-		if ( isset( $_POST['tix_end'] ) )
+		if ( isset( $_POST['tix_end'] ) ) {
+			$_POST['tix_end'] = preg_match( '/^\d{4}\-\d{2}\-\d{2}$/', $_POST['tix_end'] ) ? $_POST['tix_end'] : '';
 			update_post_meta( $post_id, 'tix_end', $_POST['tix_end'] );
+		}
 
 		// Questions
 		if ( isset( $_POST['tix_questions'] ) ) {
@@ -3671,7 +3905,7 @@ class CampTix_Plugin {
 
 				$clean_question = array(
 					'post_id' => ( isset( $question['post_id'] ) ) ? absint( $question['post_id'] ) : false,
-					'question' => strip_tags( $question['question'] ),
+					'question' => wp_kses_post( $question['question'] ),
 					'type' => $question['type'],
 					'values' => $question_values,
 					'required' => isset( $question['required'] ),
@@ -3697,7 +3931,7 @@ class CampTix_Plugin {
 
 					// Make sure we're editing a question.
 					$question_post = get_post( $question_id );
-					if ( $question_post->post_type != 'tix_question' )
+					if ( $question_post->post_type != 'tix_question' || ! current_user_can( 'edit_post', $question_id ) )
 						wp_die( 'Cheating?' );
 
 					wp_update_post( array(
@@ -3734,7 +3968,7 @@ class CampTix_Plugin {
 				&& ! empty( $_POST['tix_reservation_name'] ) && intval( $_POST['tix_reservation_quantity'] ) > 0 ) {
 
 				$reservation_id = sanitize_title_with_dashes( $_POST['tix_reservation_name'] );
-				$reservation_name = $_POST['tix_reservation_name'];
+				$reservation_name = sanitize_text_field( $_POST['tix_reservation_name'] );
 				$reservation_quantity = intval( $_POST['tix_reservation_quantity'] );
 				$reservation_token = md5( 'caMptix-r353rv4t10n' . rand( 1, 9999 ) . time() . $reservation_id . $post_id );
 				$reservation = array(
@@ -3805,6 +4039,12 @@ class CampTix_Plugin {
 		if ( wp_is_post_revision( $post_id ) || 'tix_attendee' != get_post_type( $post_id ) )
 			return;
 
+		if ( isset( $_POST['tix_privacy'] ) && 'on' == $_POST['tix_privacy'] ) {
+			update_post_meta( $post_id, 'tix_privacy', 'private' );
+		} else {
+			delete_post_meta( $post_id, 'tix_privacy' );
+		}
+
 		$search_meta_fields = array(
 			'tix_first_name',
 			'tix_last_name',
@@ -3819,12 +4059,13 @@ class CampTix_Plugin {
 			'tix_edit_token',
 			'tix_payment_token',
 			'tix_payment_method',
+			'tix_privacy',
 		);
 		$data = array( 'timestamp' => time() );
 
 		foreach ( $search_meta_fields as $key )
 			if ( get_post_meta( $post_id, $key, true ) )
-				$data[$key] = sprintf( "%s:%s", $key, maybe_serialize( get_post_meta( $post_id, $key, true ) ) );
+				$data[ $key ] = sprintf( "%s:%s", $key, maybe_serialize( get_post_meta( $post_id, $key, true ) ) );
 
 		$first_name = get_post_meta( $post_id, 'tix_first_name', true );
 		$last_name = get_post_meta( $post_id, 'tix_last_name', true );
@@ -3859,15 +4100,12 @@ class CampTix_Plugin {
 		if ( ! isset( $_POST['action'] ) || 'editpost' != $_POST['action'] )
 			return;
 
-		/**
-		 * @todo figure out security issue with .org
-		 */
 		// Security check.
-		// $nonce_action = 'update-tix_coupon_' . $post_id; // see edit-form-advanced.php
-		// check_admin_referer( $nonce_action );
+		$nonce_action = 'update-post_' . $post_id; // http://core.trac.wordpress.org/changeset/21504
+		check_admin_referer( $nonce_action );
 
 		if ( isset( $_POST['tix_discount_price'], $_POST['tix_discount_percent'] ) ) {
-			$price = (float) $_POST['tix_discount_price'];
+			$price = floatval( $_POST['tix_discount_price'] );
 			$percent = intval( $_POST['tix_discount_percent'] );
 			if ( $price > 0 ) { // a price discount has priority over % discount.
 				update_post_meta( $post_id, 'tix_discount_price', $price );
@@ -3895,10 +4133,12 @@ class CampTix_Plugin {
 		}
 
 		if ( isset( $_POST['tix_coupon_start'] ) ) {
+			$_POST['tix_coupon_start'] = preg_match( '/^\d{4}\-\d{2}\-\d{2}$/', $_POST['tix_coupon_start'] ) ? $_POST['tix_coupon_start'] : '';
 			update_post_meta( $post_id, 'tix_coupon_start', $_POST['tix_coupon_start'] );
 		}
 
 		if ( isset( $_POST['tix_coupon_end'] ) ) {
+			$_POST['tix_coupon_end'] = preg_match( '/^\d{4}\-\d{2}\-\d{2}$/', $_POST['tix_coupon_end'] ) ? $_POST['tix_coupon_end'] : '';
 			update_post_meta( $post_id, 'tix_coupon_end', $_POST['tix_coupon_end'] );
 		}
 
@@ -4008,8 +4248,8 @@ class CampTix_Plugin {
 		// Populate selected tickets from $_POST!
 		if ( isset( $_POST['tix_tickets_selected'] ) )
 			foreach ( $_POST['tix_tickets_selected'] as $ticket_id => $count )
-				if ( isset( $this->tickets[$ticket_id] ) && $count > 0 )
-					$this->tickets_selected[$ticket_id] = intval( $count );
+				if ( isset( $this->tickets[ $ticket_id ] ) && $count > 0 )
+					$this->tickets_selected[ $ticket_id ] = intval( $count );
 
 		// Make an order.
 		$this->order = array( 'items' => array(), 'total' => 0 );
@@ -4029,11 +4269,11 @@ class CampTix_Plugin {
 		}
 
 		if ( isset( $_REQUEST['tix_coupon'] ) )
-			$this->order['coupon'] = $_REQUEST['tix_coupon'];
+			$this->order['coupon'] = sanitize_text_field( $_REQUEST['tix_coupon'] );
 
 		if ( isset( $_REQUEST['tix_reservation_id'], $_REQUEST['tix_reservation_token'] ) ) {
-			$this->order['reservation_id'] = $_REQUEST['tix_reservation_id'];
-			$this->order['reservation_token'] = $_REQUEST['tix_reservation_token'];
+			$this->order['reservation_id'] = sanitize_text_field( $_REQUEST['tix_reservation_id'] );
+			$this->order['reservation_token'] = sanitize_text_field( $_REQUEST['tix_reservation_token'] );
 		}
 
 		// Check whether this is a valid order.
@@ -4044,23 +4284,23 @@ class CampTix_Plugin {
 		$tickets_excess = 0;
 		$coupons_applied = 0;
 		foreach ( $this->tickets_selected as $ticket_id => $count ) {
-			$ticket = $this->tickets[$ticket_id];
+			$ticket = $this->tickets[ $ticket_id ];
 
 			// Don't allow more than 10 tickets of each type to be purchased in bulk.
 			if ( $count > 10 && $ticket->tix_remaining > 10 ) {
-				$this->tickets_selected[$ticket_id] = 10;
+				$this->tickets_selected[ $ticket_id ] = 10;
 				$count = 10;
 				$tickets_excess += $count - 10;
 			}
 
 			// ref: #1001
 			if ( $count > $ticket->tix_remaining ) {
-				$this->tickets_selected[$ticket_id] = $ticket->tix_remaining;
+				$this->tickets_selected[ $ticket_id ] = $ticket->tix_remaining;
 				$tickets_excess += $count - $ticket->tix_remaining;
 
 				// Remove the ticket if count is 0.
-				if ( $this->tickets_selected[$ticket_id] < 1 )
-					unset( $this->tickets_selected[$ticket_id] );
+				if ( $this->tickets_selected[ $ticket_id ] < 1 )
+					unset( $this->tickets_selected[ $ticket_id ] );
 			}
 
 			// ref: #1002
@@ -4082,12 +4322,12 @@ class CampTix_Plugin {
 
 			$extra = $coupons_applied - $this->coupon->tix_coupon_remaining;
 			foreach ( array_reverse( $this->tickets_selected, true ) as $ticket_id => $count ) {
-				if ( $this->tickets[$ticket_id]->tix_coupon_applied ) {
+				if ( $this->tickets[ $ticket_id ]->tix_coupon_applied ) {
 					if ( $extra >= $count && $extra > 0 ) {
-						unset( $this->tickets_selected[$ticket_id] );
+						unset( $this->tickets_selected[ $ticket_id ] );
 						$extra -= $count;
 					} elseif ( $extra > 0 ) {
-						$this->tickets_selected[$ticket_id] -= $extra;
+						$this->tickets_selected[ $ticket_id ] -= $extra;
 						$extra -= $count;
 					}
 				}
@@ -4109,31 +4349,32 @@ class CampTix_Plugin {
 		if ( isset( $this->error_flags['no_payment_methods'] ) )
 			return $this->shortcode_contents = $this->form_start();
 
-		if ( 'attendee_info' == get_query_var( 'tix_action' ) && isset( $_POST['tix_coupon_submit'], $_POST['tix_coupon'] ) && ! empty( $_POST['tix_coupon'] ) )
+		if ( isset( $_GET['tix_action'] ) && ! empty( $_GET['tix_action'] ) ) {
+			if ( 'attendee_info' == $_GET['tix_action'] && isset( $_POST['tix_coupon_submit'], $_POST['tix_coupon'] ) && ! empty( $_POST['tix_coupon'] ) )
+				return $this->shortcode_contents = $this->form_start();
+
+			if ( 'attendee_info' == $_GET['tix_action'] && isset( $this->error_flags['no_tickets_selected'] ) )
+				return $this->shortcode_contents = $this->form_start();
+
+			if ( 'attendee_info' == $_GET['tix_action'] )
+				return $this->shortcode_contents = $this->form_attendee_info();
+
+			if ( 'checkout' == $_GET['tix_action'] )
+				return $this->shortcode_contents = $this->form_checkout();
+
+			if ( 'access_tickets' == $_GET['tix_action'] )
+				return $this->shortcode_contents = $this->form_access_tickets();
+
+			if ( 'edit_attendee' == $_GET['tix_action'] )
+				return $this->shortcode_contents = $this->form_edit_attendee();
+
+			if ( 'refund_request' == $_GET['tix_action'] && $this->options['refunds_enabled'] )
+				return $this->shortcode_contents = $this->form_refund_request();
+		} else {
 			return $this->shortcode_contents = $this->form_start();
+		}
 
-		if ( 'attendee_info' == get_query_var( 'tix_action' ) && isset( $this->error_flags['no_tickets_selected'] ) )
-			return $this->shortcode_contents = $this->form_start();
-
-		if ( 'attendee_info' == get_query_var( 'tix_action' ) )
-			return $this->shortcode_contents = $this->form_attendee_info();
-
-		if ( 'checkout' == get_query_var( 'tix_action' ) )
-			return $this->shortcode_contents = $this->form_checkout();
-
-		if ( 'access_tickets' == get_query_var( 'tix_action' ) )
-			return $this->shortcode_contents = $this->form_access_tickets();
-
-		if ( 'edit_attendee' == get_query_var( 'tix_action' ) )
-			return $this->shortcode_contents = $this->form_edit_attendee();
-
-		if ( 'refund_request' == get_query_var( 'tix_action' ) && $this->options['refunds_enabled'] )
-			return $this->shortcode_contents = $this->form_refund_request();
-
-		if ( ! get_query_var( 'tix_action' ) )
-			return $this->shortcode_contents = $this->form_start();
-
-		return $this->shortcode_contets = 'Hmmm.';
+		return $this->shortcode_contents = 'Hmmm.';
 	}
 
 	/**
@@ -4171,10 +4412,10 @@ class CampTix_Plugin {
 			$this->info( __( 'You are using a reservation, cool!', 'camptix' ) );
 
 		if ( ! isset( $_POST['tix_coupon_submit'], $_POST['tix_coupon'] ) || empty( $_POST['tix_coupon'] ) )
-			if ( isset( $this->error_flags['no_tickets_selected'] ) && 'attendee_info' == get_query_var( 'tix_action' )  )
+			if ( isset( $this->error_flags['no_tickets_selected'] ) && isset( $_GET['tix_action'] ) && 'attendee_info' == $_GET['tix_action'] )
 				$this->error( __( 'Please select at least one ticket.', 'camptix' ) );
 
-		if ( 'checkout' == get_query_var( 'tix_action' ) && isset( $this->error_flags['no_tickets_selected'] ) )
+		if ( isset( $_GET['tix_action'] ) && 'checkout' == $_GET['tix_action'] && isset( $this->error_flags['no_tickets_selected'] ) )
 			$this->error( __( 'It looks like somebody took that last ticket before you, sorry! You try a different ticket.', 'camptix' ) );
 
 		if ( isset( $this->error_flags['no_payment_methods'] ) ) {
@@ -4218,20 +4459,20 @@ class CampTix_Plugin {
 		<div id="tix">
 			<?php do_action( 'camptix_notices' ); ?>
 			<?php if ( $available_tickets ) : ?>
-			<form action="<?php echo esc_url( add_query_arg( 'tix_action', 'attendee_info', $this->get_tickets_url() ) ); ?>#tix" method="POST">
+				<form action="<?php echo esc_url( add_query_arg( 'tix_action', 'attendee_info', $this->get_tickets_url() ) ); ?>#tix" method="POST">
 
-			<?php if ( isset( $this->reservation ) && $this->reservation ) : ?>
-				<input type="hidden" name="tix_reservation_id" value="<?php echo esc_attr( $this->reservation['id'] ); ?>" />
-				<input type="hidden" name="tix_reservation_token" value="<?php echo esc_attr( $this->reservation['token'] ); ?>" />
-			<?php endif; ?>
+				<?php if ( isset( $this->reservation ) && $this->reservation ) : ?>
+					<input type="hidden" name="tix_reservation_id" value="<?php echo esc_attr( $this->reservation['id'] ); ?>" />
+					<input type="hidden" name="tix_reservation_token" value="<?php echo esc_attr( $this->reservation['token'] ); ?>" />
+				<?php endif; ?>
 
 			
 				<div class="row hide-for-small header">
 					
-						<div class="six columns"><h6><?php _e( 'Description', 'camptix' ); ?></h6></div>
-						<div class="two columns text-center"><h6><?php _e( 'Price', 'camptix' ); ?></h6></div>
-						<div class="two columns text-center"><h6><?php _e( 'Remaining', 'camptix' ); ?></h6></div>
-						<div class="two columns text-center"><h6><?php _e( 'Quantity', 'camptix' ); ?></h6></div>
+						<div class="large-6 columns"><h6><?php _e( 'Description', 'camptix' ); ?></h6></div>
+						<div class="large-2 columns text-center"><h6><?php _e( 'Price', 'camptix' ); ?></h6></div>
+						<div class="large-2 columns text-center"><h6><?php _e( 'Remaining', 'camptix' ); ?></h6></div>
+						<div class="large-2 columns text-center"><h6><?php _e( 'Quantity', 'camptix' ); ?></h6></div>
 					
 				</div>
 				
@@ -4258,7 +4499,7 @@ class CampTix_Plugin {
 							}
 						?>
 						<div class="row">
-							<div class="six columns">
+							<div class="large-6 small-12 columns">
 								<h5 class="tix-ticket-title"><?php echo $ticket->post_title; ?>
 									<?php if ( $ticket->tix_coupon_applied ) : ?>
 									<span class="label success radius"><?php echo esc_html( $ticket->tix_discounted_text ); ?></span>
@@ -4268,14 +4509,14 @@ class CampTix_Plugin {
 								<p class="tix-ticket-excerpt"><?php echo $ticket->post_excerpt; ?></p>
 								<?php endif; ?>
 							</div>
-							<div class="two columns mobile-one text-center"><h5><span class="show-for-small"><?php _e( 'Price', 'camptix' ); ?></span>
+							<div class="large-2 small-4 columns text-center"><h5><span class="show-for-small"><?php _e( 'Price', 'camptix' ); ?></span>
 								<?php if ( $price > 0 ) : ?>
 								<?php echo $this->append_currency( $price ); ?>
 								<?php else : ?>
 									<?php _e( 'Free', 'camptix' ); ?>
 								<?php endif; ?></h5>
 							</div>
-							<div class="two columns mobile-one text-center"><h5><span class="show-for-small"><?php _e( 'Rem.', 'camptix' ); ?></span><?php echo $ticket->tix_remaining; ?>
+							<div class="large-2 small-4 columns text-center"><h5><span class="show-for-small"><?php _e( 'Rem.', 'camptix' ); ?></span><?php echo $ticket->tix_remaining; ?>
 							<?php 
 								if (!($this->options['hidereserve'])) {
 									if ( $this->options['reservations_enabled'] && !(isset( $this->reservation ) && $this->reservation )) {
@@ -4290,7 +4531,7 @@ class CampTix_Plugin {
 								} 
 							?>
 							</h5></div>
-							<div class="two columns mobile-two text-center"><h5>
+							<div class="large-2 small-4 columns text-center"><h5>
 								<?php if ($ticket->tix_remaining==0) { ?>
 									<?php echo _e( 'Sold Out', 'camptix' ); ?>
 								<?php } else { ?>
@@ -4305,7 +4546,7 @@ class CampTix_Plugin {
 					<?php endforeach; ?>
 						<?php if ( $this->have_coupons() ) : ?>
 						<div class="row">
-							<div class="six columns offset-by-six text-right">
+							<div class="large-6 columns large-offset-6 text-right">
 								<?php if ( $this->coupon ) : ?>
 									<input type="hidden" name="tix_coupon" value="<?php echo esc_attr( $this->coupon->post_title ); ?>" />
 									<?php
@@ -4321,11 +4562,11 @@ class CampTix_Plugin {
 								<?php else : ?>
 								<p><a href="#" id="tix-coupon-link" class="secondary tiny button radius"><?php _e( 'Enter a coupon code', 'camptix' ); ?></a></p>
 								<div id="tix-coupon-container" style="display: none;" class="row collapse">
-									<div class="eight mobile-two columns">
+									<div class="large-8 small-8 columns">
 										<input type="text" id="tix-coupon-input" name="tix_coupon" value="" />
 									 </div>
-									<div class="four mobile-two columns">
-										<input type="submit" name="tix_coupon_submit" value="<?php esc_attr_e( 'Apply Coupon', 'camptix' ); ?>" class="postfix secondary tiny button expand" />
+									<div class="large-4 small-4 columns">
+										<input type="submit" name="tix_coupon_submit" value="<?php esc_attr_e( 'Apply Coupon', 'camptix' ); ?>" class="postfix secondary button radius" />
 									</div>
 								</div>
 								<script>
@@ -4368,19 +4609,19 @@ class CampTix_Plugin {
 		// Clean things up before and after the shortcode.
 		$post->post_content = $this->shortcode_str;
 
-		if ( isset( $this->error_flags['no_tickets_selected'] ) && 'checkout' == get_query_var( 'tix_action' ) )
+		if ( isset( $this->error_flags['no_tickets_selected'], $_GET['tix_action'] ) && 'checkout' == $_GET['tix_action'] )
 			return $this->form_start();
 
-		if ( isset( $this->error_flags['tickets_excess'] ) )
-			if ( 'attendee_info' == get_query_var( 'tix_action' ) )
+		if ( isset( $this->error_flags['tickets_excess'], $_GET['action'] ) )
+			if ( 'attendee_info' == $_GET['tix_action'] )
 				$this->notice( __( 'It looks like you have chosen more tickets than we have left! We have stripped the extra ones.', 'camptix' ) );
-			elseif ( 'checkout' == get_query_var( 'tix_action' ) )
+			elseif ( 'checkout' == $_GET['tix_action'] )
 				$this->error( __( 'It looks like somebody purchased a ticket before you could finish your purchase. Please review your order and try again.', 'camptix' ) );
 
-		if ( isset( $this->error_flags['coupon_excess'] ) )
-			if ( 'attendee_info' == get_query_var( 'tix_action' ) )
+		if ( isset( $this->error_flags['coupon_excess'], $_GET['tix_action'] ) )
+			if ( 'attendee_info' == $_GET['tix_action'] )
 				$this->notice( __( 'You have exceeded the coupon limits, so we have stripped down the extra tickets.', 'camptix' ) );
-			elseif ( 'checkout' == get_query_var( 'tix_action' ) )
+			elseif ( 'checkout' == $_GET['tix_action'] )
 				$this->error( __( 'It looks like somebody used the same coupon before you could finish your purchase. Please review your order and try again.', 'camptix' ) );
 
 		if ( isset( $this->error_flags['required_fields'] ) )
@@ -4393,7 +4634,7 @@ class CampTix_Plugin {
 			$this->error( __( 'The chosen receipt e-mail address is either empty or invalid.', 'camptix' ) );
 
 		if ( isset( $this->error_flags['payment_failed'] ) )
-			$this->error( __( 'An payment error has occurred, looks like chosen payment method is not responding. Please try again later.', 'camptix' ) );
+			$this->error( __( 'A payment error has occurred, looks like chosen payment method is not responding. Please try again later.', 'camptix' ) );
 
 		if ( isset( $this->error_flags['invalid_payment_method'] ) )
 			$this->error( __( 'You have selected an invalid payment method. Please try again.', 'camptix' ) );
@@ -4425,10 +4666,10 @@ class CampTix_Plugin {
 				<h4><?php _e( 'Order Summary', 'camptix' ); ?></h4>
 					<div class="row hide-for-small header">
 
-						<div class="six columns"><h6><?php _e( 'Description', 'camptix' ); ?></h6></div>
-						<div class="two columns text-center"><h6><?php _e( 'Per Ticket', 'camptix' ); ?></h6></div>
-						<div class="two columns text-center"><h6><?php _e( 'Quantity', 'camptix' ); ?></h6></div>
-						<div class="two columns text-center"><h6><?php _e( 'Price', 'camptix' ); ?></h6></div>
+						<div class="large-6 columns"><h6><?php _e( 'Description', 'camptix' ); ?></h6></div>
+						<div class="large-2 columns text-center"><h6><?php _e( 'Per Ticket', 'camptix' ); ?></h6></div>
+						<div class="large-2 columns text-center"><h6><?php _e( 'Quantity', 'camptix' ); ?></h6></div>
+						<div class="large-2 columns text-center"><h6><?php _e( 'Price', 'camptix' ); ?></h6></div>
 
 					</div>
 
@@ -4440,25 +4681,25 @@ class CampTix_Plugin {
 								$total += $price * $count;
 							?>
 							<div class="row">
-								<div class="six columns">
+								<div class="large-6 small-12 columns">
 									<h5 class="tix-ticket-title"><?php echo $ticket->post_title; ?>
 									<?php if ( $ticket->tix_coupon_applied ) : ?>
 									<span class="label success radius"><?php echo $ticket->tix_discounted_text; ?></span>
 									<?php endif; ?></h5>
 								</div>
-								<div class="two columns mobile-one text-center"><h5><span class="show-for-small">Per Ticket</span>
+								<div class="large-2 small-4 columns text-center"><h5><span class="show-for-small">Per Ticket</span>
 								<?php if ( $price > 0 ) : ?>
 									<?php echo $this->append_currency( $price ); ?>
 								<?php else : ?>
 									Free
 								<?php endif; ?>
 								</div>
-								<div class="two columns mobile-one text-center"><h5><span class="show-for-small">Qty.</span><?php echo intval( $count ); ?></h5></div>
-								<div class="two columns mobile-two text-center"><h5><span class="show-for-small">Price.</span><?php echo $this->append_currency( $price  * intval( $count ) ); ?></h5></div>
+								<div class="large-2 small-4 columns text-center"><h5><span class="show-for-small">Qty.</span><?php echo intval( $count ); ?></h5></div>
+								<div class="large-2 small-4 columns text-center"><h5><span class="show-for-small">Price.</span><?php echo $this->append_currency( $price  * intval( $count ) ); ?></h5></div>
 							</div>
 						<?php endforeach; ?>
 						<div class="row">
-							<div class="ten columns mobile-two text-right"><p>
+							<div class="large-10 small-8 columns text-right"><p>
 								<?php if ( $this->coupon ) : ?>
 									<?php
 										$discount_price = (float) $this->coupon->tix_discount_price;
@@ -4472,7 +4713,7 @@ class CampTix_Plugin {
 									<small><?php printf( __( 'Coupon Applied: <strong>%s</strong>, %s discount', 'camptix' ), esc_html( $this->coupon->post_title ), $discount_text ); ?></small>
 								<?php endif; ?>
 							</p></div>
-							<div class="two columns mobile-two text-center"><h5><strong><?php echo $this->append_currency( $total ); ?></strong></h5></div>
+							<div class="large-2 small-4 columns text-center"><h5><strong><?php echo $this->append_currency( $total ); ?></strong></h5></div>
 						</div>
 
 				<h4 id="tix-registration-information"><?php _e( 'Registration Information', 'camptix' ); ?></h4>
@@ -4489,7 +4730,7 @@ class CampTix_Plugin {
 						<legend><?php echo $i; ?>. <?php echo $ticket->post_title; ?></legend>
 
 						<div class="row">
-							<div class="twelve columns">
+							<div class="large-12 columns">
 
 									<label><?php _e( 'First Name', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
 									<?php $value = isset( $this->form_data['tix_attendee_info'][$i]['first_name'] ) ? $this->form_data['tix_attendee_info'][$i]['first_name'] : ''; ?>
@@ -4506,7 +4747,7 @@ class CampTix_Plugin {
 										$tix_receipt_email = isset( $this->form_data['tix_receipt_email'] ) ? $this->form_data['tix_receipt_email'] : 1;
 									?>
 									<?php if ( $this->tickets_selected_count > 1 ) : ?>
-										<div class="tix-hide-if-js row"><div class="twelve columns"><p>
+										<div class="tix-hide-if-js row"><div class="large-12 columns"><p>
 											<label><input name="tix_receipt_email" <?php checked( $tix_receipt_email, $i ); ?> value="<?php echo $i; ?>" type="radio" /> <?php _e( 'Send the receipt to this address', 'camptix' ); ?></label>
 										</p></div></div>
 									<?php else: ?>
@@ -4551,7 +4792,7 @@ class CampTix_Plugin {
 
 				<?php if ( $total > 0 ) : ?>
 					<div class="row">
-						<div class="twelve columns text-right">
+						<div class="large-12 columns text-right">
 							<?php if (count($this->get_enabled_payment_methods())>1) : ?>
 								<select name="tix_payment_method">
 									<?php foreach ( $this->get_enabled_payment_methods() as $payment_method_key => $payment_method ) : ?>
@@ -4572,7 +4813,7 @@ class CampTix_Plugin {
 					</div>
 				<?php else : ?>
 					<div class="row">
-						<div class="twelve columns">
+						<div class="large-12 columns">
 							<input type="submit" value="<?php esc_attr_e( 'Claim Tickets &rarr;', 'camptix' ); ?>" class="button right radius"  />
 						</div>
 					</div>
@@ -4597,7 +4838,7 @@ class CampTix_Plugin {
 
 		ob_start();
 
-		if ( ! isset( $_REQUEST['tix_access_token'] ) || empty( $_REQUEST['tix_access_token'] ) ) {
+		if ( ! isset( $_REQUEST['tix_access_token'] ) || empty( $_REQUEST['tix_access_token'] ) || ! ctype_alnum( $_REQUEST['tix_access_token'] ) ) {
 			$this->error_flags['invalid_access_token'] = true;
 			$this->redirect_with_error_flags();
 			die();
@@ -4636,9 +4877,9 @@ class CampTix_Plugin {
 		
 			
 				<div class="row hide-for-small header">
-					<div class="six columns"><h6><?php _e( 'Tickets Summary', 'camptix' ); ?></h6></div>
-					<div class="three columns text-center"><h6><?php _e( 'Purchase Date', 'camptix' ); ?></h6></div>
-					<div class="three columns text-center"><h6><?php _e( 'Options', 'camptix' ); ?></h6></div>
+					<div class="large-6 columns"><h6><?php _e( 'Tickets Summary', 'camptix' ); ?></h6></div>
+					<div class="large-3 columns text-center"><h6><?php _e( 'Purchase Date', 'camptix' ); ?></h6></div>
+					<div class="large-3 columns text-center"><h6><?php _e( 'Options', 'camptix' ); ?></h6></div>
 				</div>
 			
 			
@@ -4684,14 +4925,14 @@ class CampTix_Plugin {
 							$is_refundable = true;
 					?>
 					<div class="row">
-						<div class="six columns">
+						<div class="large-6 columns">
 							<h5><?php echo esc_html( sprintf( "%s %s", $first_name, $last_name ) ); ?></h5>
 							<p><?php echo $this->get_ticket_title( intval( get_post_meta( $attendee->ID, 'tix_ticket_id', true ) ) ); ?></p>
 						</div>
-						<div class="three columns text-center">
+						<div class="large-3 columns text-center">
 							<h5><span class="show-for-small">Date</span><?php echo mysql2date( get_option( 'date_format' ), $attendee->post_date ); ?></h5>
 						</div>
-						<div class="three columns text-center">
+						<div class="large-3 columns text-center">
 							<h5><a href="<?php echo esc_url( $edit_link ); ?>" class="small button radius"><?php _e( 'Edit information', 'camptix' ); ?></a></h5>
 						</div>
 					</div>
@@ -4728,12 +4969,12 @@ class CampTix_Plugin {
 		$post->post_content = $this->shortcode_str;
 
 		ob_start();
-		if ( ! isset( $_REQUEST['tix_edit_token'] ) || empty( $_REQUEST['tix_edit_token'] ) ) {
+		if ( ! isset( $_REQUEST['tix_edit_token'] ) || empty( $_REQUEST['tix_edit_token'] ) || ! ctype_alnum( $_REQUEST['tix_edit_token'] ) ) {
 			$this->error_flags['invalid_edit_token'] = true;
 			$this->redirect_with_error_flags();
 		}
 
-		if ( ! isset( $_REQUEST['tix_attendee_id'] ) || empty( $_REQUEST['tix_attendee_id'] ) ) {
+		if ( ! isset( $_REQUEST['tix_attendee_id'] ) || empty( $_REQUEST['tix_attendee_id'] ) || ! intval( $_REQUEST['tix_attendee_id'] ) ) {
 			$this->error_flags['invalid_edit_token'] = true;
 			$this->redirect_with_error_flags();
 		}
@@ -4796,7 +5037,9 @@ class CampTix_Plugin {
 			$new_answers = array();
 			foreach ( $questions as $question ) {
 				if ( isset( $_POST['tix_ticket_questions'][ $question->ID ] ) ) {
-					$new_answers[$question->ID] = stripslashes_deep( $posted['tix_ticket_questions'][ $question->ID ] );
+					$answer = stripslashes_deep( $posted['tix_ticket_questions'][ $question->ID ] );
+					$answer = ( is_array( $answer ) ) ? array_map( 'strip_tags', $answer ) : strip_tags( $answer );
+					$new_answers[ $question->ID ] = $answer;
 				}
 
 				// @todo maybe check $user_values against $type and $question_values
@@ -4815,9 +5058,9 @@ class CampTix_Plugin {
 			} else {
 
 				// Save info
-				update_post_meta( $attendee->ID, 'tix_first_name', $new_ticket_info['first_name'] );
-				update_post_meta( $attendee->ID, 'tix_last_name', $new_ticket_info['last_name'] );
-				update_post_meta( $attendee->ID, 'tix_email', $new_ticket_info['email'] );
+				update_post_meta( $attendee->ID, 'tix_first_name', sanitize_text_field( $new_ticket_info['first_name'] ) );
+				update_post_meta( $attendee->ID, 'tix_last_name', sanitize_text_field( $new_ticket_info['last_name'] ) );
+				update_post_meta( $attendee->ID, 'tix_email', sanitize_email( $new_ticket_info['email'] ) );
 				update_post_meta( $attendee->ID, 'tix_questions', $new_answers );
 
 				wp_update_post( $attendee ); // triggers save_attendee
@@ -4839,7 +5082,7 @@ class CampTix_Plugin {
 				<fieldset>
 					<legend><?php echo $ticket->post_title; ?></legend>
 					<div class="row">
-						<div class="twelve columns">
+						<div class="large-12 columns">
 
 							<label><?php _e( 'First Name', 'camptix' ); ?> <span class="tix-required-star">*</span></label>
 							<input name="tix_ticket_info[first_name]" type="text" value="<?php echo esc_attr( $ticket_info['first_name'] ); ?>" class="required" />
@@ -4871,7 +5114,7 @@ class CampTix_Plugin {
 				</fieldset>
 
 				<div class="row">
-					<div class="twelve columns">
+					<div class="large-12 columns">
 						<input type="submit" value="<?php esc_attr_e( 'Save Attendee Information', 'camptix' ); ?>" class="button radius right" />
 					</div>
 				</div>
@@ -4887,12 +5130,10 @@ class CampTix_Plugin {
 	function form_refund_request() {
 		global $post;
 
-		die( 'needs implementation' );
-
 		// Clean things up before and after the shortcode.
 		$post->post_content = $this->shortcode_str;
 
-		if ( ! $this->options['refunds_enabled'] || ! isset( $_REQUEST['tix_access_token'] ) || empty( $_REQUEST['tix_access_token'] ) ) {
+		if ( ! $this->options['refunds_enabled'] || ! isset( $_REQUEST['tix_access_token'] ) || ! ctype_alnum( $_REQUEST['tix_access_token'] ) ) {
 			$this->error_flags['invalid_access_token'] = true;
 			$this->redirect_with_error_flags();
 			die();
@@ -4935,10 +5176,14 @@ class CampTix_Plugin {
 		$tickets = array();
 
 		foreach ( $attendees as $attendee ) {
-			$txn_id = get_post_meta( $attendee->ID, 'tix_paypal_transaction_id', true );
+			$txn_id = get_post_meta( $attendee->ID, 'tix_transaction_id', true );
 			if ( $txn_id ) {
-				$transactions[$txn_id] = get_post_meta( $attendee->ID, 'tix_paypal_transaction_details', true );
-				$order_total = get_post_meta( $attendee->ID, 'tix_order_total', true );
+				$transactions[ $txn_id ]                   = get_post_meta( $attendee->ID, 'tix_transaction_details', true );
+				$transactions[ $txn_id ]['transaction_id'] = $txn_id;
+				$transactions[ $txn_id ]['payment_amount'] = get_post_meta( $attendee->ID, 'tix_order_total', true );
+				$transactions[ $txn_id ]['receipt_email']  = get_post_meta( $attendee->ID, 'tix_receipt_email', true );
+				$transactions[ $txn_id ]['payment_method'] = get_post_meta( $attendee->ID, 'tix_payment_method', true );
+				$transactions[ $txn_id ]['payment_token']  = get_post_meta( $attendee->ID, 'tix_payment_token', true );
 			}
 			$ticket_id = get_post_meta( $attendee->ID, 'tix_ticket_id', true );
 
@@ -4946,17 +5191,16 @@ class CampTix_Plugin {
 				$tickets[$ticket_id]++;
 			else
 				$tickets[$ticket_id] = 1;
-
 		}
 
-		if ( count( $transactions ) != 1 || $order_total <= 0 ) {
+		if ( count( $transactions ) != 1 || $transactions[ $txn_id ]['payment_amount'] <= 0 ) {
 			$this->error_flags['cannot_refund'] = true;
 			$this->redirect_with_error_flags();
 			die();
 		}
 
 		$transaction = array_shift( $transactions );
-		if ( ! isset( $transaction['EMAIL'], $transaction['TRANSACTIONID'], $transaction['PAYMENTSTATUS'], $transaction['AMT'], $transaction['CURRENCYCODE'] ) ) {
+		if ( ! $transaction['receipt_email'] || ! $transaction['transaction_id'] || ! $transaction['payment_amount'] ) {
 			$this->error_flags['cannot_refund'] = true;
 			$this->redirect_with_error_flags();
 			die();
@@ -4972,24 +5216,29 @@ class CampTix_Plugin {
 				$this->error( __( 'You have to agree to the terms to request a refund.', 'camptix' ) );
 			} else {
 
-				$payload = array(
-					'METHOD' => 'RefundTransaction',
-					'TRANSACTIONID' => $transaction['TRANSACTIONID'],
-					'REFUNDTYPE' => 'Full',
-				);
+				$payment_method_obj = $this->get_payment_method_by_id( $transaction['payment_method'] );
 
-				$txn = wp_parse_args( wp_remote_retrieve_body( $this->paypal_request( $payload ) ) );
-				if ( isset( $txn['ACK'], $txn['REFUNDTRANSACTIONID'] ) && $txn['ACK'] == 'Success' ) {
-					$refund_txn_id = $txn['REFUNDTRANSACTIONID'];
+				// Bail if a payment method does not exist.
+				if ( ! $payment_method_obj ) {
+					$this->error_flags['cannot_refund'] = true;
+					$this->redirect_with_error_flags();
+					die();
+				}
+
+				/**
+				 * @todo: Better error messaging for misconfigured payment methods
+				 */
+
+				// Attempt to process the refund transaction
+				$result = $payment_method_obj->payment_refund( $transaction['payment_token'] );
+				$this->log( 'Individual refund request result.', $attendee->ID, $result, 'refund' );
+				if ( CampTix_Plugin::PAYMENT_STATUS_REFUNDED == $result ) {
 					foreach ( $attendees as $attendee ) {
-						$this->log( sprintf( 'Refunded %s by user request in %s.', $transaction['TRANSACTIONID'], $refund_txn_id ), $attendee->ID, $txn, 'refund' );
+						update_post_meta( $attendee->ID, 'tix_refund_reason', $reason );
 						$this->log( 'Refund reason attached with data.', $attendee->ID, $reason, 'refund' );
-						$attendee->post_status = 'refund';
-						wp_update_post( $attendee );
 					}
 
 					$this->info( __( 'Your tickets have been successfully refunded.', 'camptix' ) );
-					ob_end_clean();
 					return $this->form_refund_success();
 				} else {
 					$this->error( __( 'Can not refund the transaction at this time. Please try again later.', 'camptix' ) );
@@ -5015,11 +5264,11 @@ class CampTix_Plugin {
 						</tr>
 						<tr>
 							<td class="tix-left"><?php _e( 'E-mail', 'camptix' ); ?></td>
-							<td class="tix-right"><?php echo esc_html( $transaction['EMAIL'] ); ?></td>
+							<td class="tix-right"><?php echo esc_html( $transaction['receipt_email'] ); ?></td>
 						</tr>
 						<tr>
 							<td class="tix-left"><?php _e( 'Original Payment', 'camptix' ); ?></td>
-							<td class="tix-right"><?php printf( "%s %s", $transaction['CURRENCYCODE'], $transaction['AMT'] ); ?></td>
+							<td class="tix-right"><?php printf( "%s %s", $this->options['currency'], $transaction['payment_amount'] ); ?></td>
 						</tr>
 						<tr>
 							<td class="tix-left"><?php _e( 'Purchased Tickets', 'camptix' ); ?></td>
@@ -5031,7 +5280,7 @@ class CampTix_Plugin {
 						</tr>
 						<tr>
 							<td class="tix-left"><?php _e( 'Refund Amount', 'camptix' ); ?></td>
-							<td class="tix-right"><?php printf( "%s %s", $transaction['CURRENCYCODE'], $transaction['AMT'] ); ?></td>
+							<td class="tix-right"><?php printf( "%s %s", $this->options['currency'], $transaction['payment_amount'] ); ?></td>
 						</tr>
 						<tr>
 							<td class="tix-left"><?php _e( 'Refund Reason', 'camptix' ); ?></td>
@@ -5040,7 +5289,7 @@ class CampTix_Plugin {
 
 					</tbody>
 				</table>
-				<p class="tix-description"><?php _e( 'Refunds can take up to several days to process. All purchased tickets will be cancelled. Partial refunds and refunds to a different account that the original purchaser, are unavailable. You have to agree to these terms before requesting a refund.', 'camptix' ); ?></p>
+				<p class="tix-description"><?php _e( 'Refunds can take up to several days to process. All of the tickets you purchased in the original transaction will be cancelled. We are not able to provide partial refunds and/or refunds to a different account than the original purchaser. You must agree to these terms before requesting a refund.', 'camptix' ); ?></p>
 				<p class="tix-submit">
 					<label><input type="checkbox" name="tix_refund_request_confirmed" value="1"> <?php _e( 'I agree to the above terms', 'camptix' ); ?></label>
 					<input type="submit" value="<?php esc_attr_e( 'Send Request', 'camptix' ); ?>" />
@@ -5073,12 +5322,14 @@ class CampTix_Plugin {
 
 	/**
 	 * Return true if an attendee_id is refundable.
-	 * @todo implement
 	 */
 	function is_refundable( $attendee_id ) {
-		return false;
-
 		if ( ! $this->options['refunds_enabled'] )
+			return false;
+
+		$payment_method = get_post_meta( $attendee_id, 'tix_payment_method', true );
+		$payment_method_obj = $this->get_payment_method_by_id( $payment_method );
+		if ( ! $payment_method_obj || ! $payment_method_obj->supports_feature( 'refund-single' ) )
 			return false;
 
 		$today = date( 'Y-m-d' );
@@ -5091,7 +5342,7 @@ class CampTix_Plugin {
 			return false;
 
 		$attendee = get_post( $attendee_id );
-		if ( $attendee->post_status == 'publish' && (float) get_post_meta( $attendee->ID, 'tix_order_total', true ) > 0 && get_post_meta( $attendee->ID, 'tix_paypal_transaction_id', true ) )
+		if ( $attendee->post_status == 'publish' && (float) get_post_meta( $attendee->ID, 'tix_order_total', true ) > 0 && get_post_meta( $attendee->ID, 'tix_transaction_id', true ) )
 			return true;
 
 		return false;
@@ -5225,7 +5476,7 @@ class CampTix_Plugin {
 		if ( isset( $this->reservation ) && $this->reservation )
 			$via_reservation = $this->reservation['token'];
 
-		if ( ($this->get_remaining_tickets( $post_id, $via_reservation ) < 1) && ($this->options['hidesoldout']) ) return false;
+		if ( apply_filters( 'camptix_hide_empty_tickets', true ) && $this->get_remaining_tickets( $post_id, $via_reservation ) < 1 ) return false;
 
 		$start = get_post_meta( $post_id, 'tix_start', true );
 		$end = get_post_meta( $post_id, 'tix_end', true );
@@ -5486,13 +5737,16 @@ class CampTix_Plugin {
 				continue;
 			}
 
-			$ticket = $this->tickets[$attendee_info['ticket_id']];
+			$ticket = $this->tickets[ $attendee_info['ticket_id'] ];
 			if ( ! $this->is_ticket_valid_for_purchase( $ticket->ID ) ) {
 				$this->error_flags['tickets_excess'] = true;
 				continue;
 			}
 
 			$attendee_info = array_map( 'trim', $attendee_info );
+
+			$attendee_info['first_name'] = sanitize_text_field( $attendee_info['first_name'] );
+			$attendee_info['last_name'] = sanitize_text_field( $attendee_info['last_name'] );
 
 			if ( empty( $attendee_info['first_name'] ) || empty( $attendee_info['last_name'] ) )
 				$this->error_flags['required_fields'] = true;
@@ -5501,14 +5755,17 @@ class CampTix_Plugin {
 				$this->error_flags['invalid_email'] = true;
 
 			$answers = array();
-			if ( isset( $_POST['tix_attendee_questions'][$i] ) ) {
+			if ( isset( $_POST['tix_attendee_questions'][ $i ] ) ) {
 				$questions = $this->get_sorted_questions( $ticket->ID );
 
 				foreach ( $questions as $question ) {
-					if ( isset( $_POST['tix_attendee_questions'][$i][$question->ID] ) )
-						$answers[$question->ID] = $_POST['tix_attendee_questions'][$i][$question->ID];
+					if ( isset( $_POST['tix_attendee_questions'][ $i ][ $question->ID ] ) ) {
+						$answer = $_POST['tix_attendee_questions'][ $i ][ $question->ID ];
+						$answer = ( is_array( $answer ) ) ? array_map( 'strip_tags', $answer ) : strip_tags( $answer );
+						$answers[ $question->ID ] = $answer;
+					}
 
-					if ( (bool) get_post_meta( $question->ID, 'tix_required', true ) && empty( $answers[$question->ID] ) ) {
+					if ( (bool) get_post_meta( $question->ID, 'tix_required', true ) && empty( $answers[ $question->ID ] ) ) {
 						$this->error_flags['required_fields'] = true;
 						break;
 					}
@@ -5533,7 +5790,7 @@ class CampTix_Plugin {
 		}
 
 		// @todo maybe check if email is one of the attendees emails
-		if ( isset( $_POST['tix_receipt_email_js'] ) && is_email( $_POST['tix_receipt_email_js']) )
+		if ( isset( $_POST['tix_receipt_email_js'] ) && is_email( $_POST['tix_receipt_email_js'] ) )
 			$receipt_email = $_POST['tix_receipt_email_js'];
 
 		if ( ! is_email( $receipt_email ) )
@@ -5586,8 +5843,8 @@ class CampTix_Plugin {
 
 				// Cash
 				update_post_meta( $post_id, 'tix_order_total', (float) $this->order['total'] );
-				update_post_meta( $post_id, 'tix_ticket_price', (float) $this->tickets[$attendee->ticket_id]->tix_price );
-				update_post_meta( $post_id, 'tix_ticket_discounted_price', (float) $this->tickets[$attendee->ticket_id]->tix_discounted_price );
+				update_post_meta( $post_id, 'tix_ticket_price', (float) $this->tickets[ $attendee->ticket_id ]->tix_price );
+				update_post_meta( $post_id, 'tix_ticket_discounted_price', (float) $this->tickets[ $attendee->ticket_id ]->tix_discounted_price );
 
 				// @todo sanitize questions
 				update_post_meta( $post_id, 'tix_questions', $attendee->answers );
@@ -5634,11 +5891,13 @@ class CampTix_Plugin {
 				return;
 			}
 
-			$payment_method_obj->payment_checkout( $payment_token );
-
-			// Check whether there were any immediate payment errors.
-			if ( $this->error_flags )
+			/**
+			 * @todo: Better error messaging for misconfigured payment methods
+			 */
+			$result = $payment_method_obj->payment_checkout( $payment_token );
+			if ( self::PAYMENT_STATUS_FAILED == $result ) {
 				return $this->form_attendee_info();
+			}
 
 		} else { // free beer for everyone!
 			$this->payment_result( $payment_token, self::PAYMENT_STATUS_COMPLETED );
@@ -5793,9 +6052,9 @@ class CampTix_Plugin {
 
 		if ( ! empty( $this->error_flags ) ) {
 
-			if ( 'attendee_info' == get_query_var( 'tix_action' ) ) {
+			if ( isset( $_GET['tix_action'] ) && 'attendee_info' == $_GET['tix_action'] ) {
 				// print_r($this->error_flags);
-			} elseif( 'checkout' == get_query_var( 'tix_action' ) ) {
+			} elseif( isset( $_GET['tix_action'] ) && 'checkout' == $_GET['tix_action'] ) {
 				// print_r($this->error_flags);
 			} else {
 				$this->redirect_with_error_flags();
@@ -5803,6 +6062,52 @@ class CampTix_Plugin {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Get's a piece of post meta data associated with a payment token
+	 *
+	 * @param string $payment_token
+	 * @param string $field The name of the post meta field, e.g., 'tix_transaction_id'
+	 * @return mixed
+	 */
+	function get_post_meta_from_payment_token( $payment_token, $field ) {
+	 	$attendees = $this->get_attendees_from_payment_token( $payment_token );
+		if ( isset( $attendees[0]->ID ) )
+			$data = get_post_meta( $attendees[0]->ID, $field, true );
+		else
+			$data = false;
+
+		return $data;
+	}
+
+	/**
+	 * Retrieves the attendee associated with a given the payment token
+	 *
+	 * @param string $payment_token
+	 * @return array
+	 */
+	function get_attendees_from_payment_token( $payment_token ) {
+		$cache_key = md5( 'get_attendees_from_payment_token' . $payment_token );
+		$attendees = $this->tmp( $cache_key );
+
+		if ( null === $attendees ) {
+			$attendees = get_posts( array(
+				'post_type'      => 'tix_attendee',
+				'posts_per_page' => -1,
+				'post_status'    => array( 'draft', 'pending', 'publish', 'cancel', 'refund', 'failed' ),
+				'meta_query'     => array(
+					array(
+						'key'    => 'tix_payment_token',
+						'value'  => $payment_token,
+					)
+				),
+			) );
+
+			$this->tmp( $cache_key, $attendees );
+		}
+
+		return $attendees;
 	}
 
 	/**
@@ -5897,6 +6202,13 @@ class CampTix_Plugin {
 			if ( self::PAYMENT_STATUS_REFUNDED == $result ) {
 				$attendee->post_status = 'refund';
 				wp_update_post( $attendee );
+				update_post_meta( $attendee->ID, 'tix_refund_transaction_id', $data['refund_transaction_id'] );
+				update_post_meta( $attendee->ID, 'tix_refund_transaction_details', $data['refund_transaction_details'] );
+				$this->log( sprintf( 'Refunded %s by user request in %s.', $transaction_id, $data['refund_transaction_id'] ), $attendee->ID, $data, 'refund' );
+			}
+
+			if ( self::PAYMENT_STATUS_REFUND_FAILED == $result ) {
+				return $result;
 			}
 
 			$this->log( sprintf( 'Payment result for %s.', $transaction_id ), $attendee->ID, $data );
@@ -5927,6 +6239,7 @@ class CampTix_Plugin {
 
 		// Send out the tickets and receipt if necessary.
 		$this->email_tickets( $payment_token, $from_status, $to_status );
+		do_action( 'camptix_payment_result', $payment_token, $result, $data );
 
 		// Let's make a clean exit out of all of this.
 		switch ( $result ) :
@@ -5952,10 +6265,10 @@ class CampTix_Plugin {
 					$error_code = $data['error_code'];
 
 				// If payment errors were immediate (right on the checkout page), return.
-				if ( 'checkout' == get_query_var( 'tix_action' ) ) {
+				if ( isset( $_GET['tix_action'] ) && 'checkout' == $_GET['tix_action'] ) {
 					$this->error_flag( 'payment_failed' );
 					// $this->error_data['boogie'] = 'woogie'; // @todo Add error data and parse it
-					return;
+					return $result;
 
 				} else {
 					$this->error_flag( 'payment_failed' );
@@ -5974,8 +6287,7 @@ class CampTix_Plugin {
 				break;
 
 			case self::PAYMENT_STATUS_REFUNDED :
-				// @todo what do we do when a purchase is refunded?
-				die();
+				return $result;
 				break;
 
 			default:
@@ -5985,6 +6297,8 @@ class CampTix_Plugin {
 	}
 
 	function email_tickets( $payment_token = false, $from_status = 'draft', $to_status = 'publish' ) {
+		global $shortcode_tags;
+
 		if ( ! $payment_token )
 			return;
 
@@ -6005,6 +6319,12 @@ class CampTix_Plugin {
 		if ( ! $attendees )
 			return;
 
+		// Remove all shortcodes before sending the e-mails, but bring them back later.
+		$this->removed_shortcodes = $shortcode_tags;
+		remove_all_shortcodes();
+
+		do_action( 'camptix_init_email_templates_shortcodes' );
+
 		$access_token = get_post_meta( $attendees[0]->ID, 'tix_access_token', true );
 		$receipt_email = get_post_meta( $attendees[0]->ID, 'tix_receipt_email', true );
 		$order = get_post_meta( $attendees[0]->ID, 'tix_order', true );
@@ -6021,6 +6341,9 @@ class CampTix_Plugin {
 		$receipt_content .= sprintf( "* " . __( 'Total: %s', 'camptix' ), $this->append_currency( $order['total'], false ) );
 		$signature = apply_filters( 'camptix_ticket_email_signature', __( 'Let us know if you have any questions!', 'camptix' ) );
 
+		// Set the tmp receipt for shortcodes use.
+		$this->tmp( 'receipt', $receipt_content );
+
 		/**
 		 * If there's more than one attendee we should e-mail a separate ticket to each attendee,
 		 * but only if the payment was from draft to completed or pending.For non-draft to ... tickets
@@ -6032,7 +6355,11 @@ class CampTix_Plugin {
 				$edit_token = get_post_meta( $attendee->ID, 'tix_edit_token', true );
 				$edit_link = $this->get_edit_attendee_link( $attendee->ID, $edit_token );
 
-				$content = sprintf( __( "Hi there!\n\nThank you so much for purchasing a ticket and hope to see you soon at our event. You can edit your information at any time before the event, by visiting the following link:\n\n%s\n\n%s", 'camptix' ), $edit_link, $signature );
+				$this->tmp( 'attendee_id', $attendee->ID );
+				$this->tmp( 'ticket_url', $edit_link );
+
+				$content = do_shortcode( $this->options['email_template_multiple_purchase'] );
+
 				$subject = sprintf( __( "Your Ticket to %s", 'camptix' ), $this->options['event_name'] );
 
 				$this->log( sprintf( 'Sent ticket e-mail to %s and receipt to %s.', $attendee_email, $receipt_email ), $attendee->ID );
@@ -6043,12 +6370,45 @@ class CampTix_Plugin {
 		}
 
 		/**
+		 * If an order with multiple attendees is refunded, let all of them know
+		 * Don't send one to the attendee who placed the order, though, because they'll get a separate notification
+		 */
+		if ( count( $attendees ) > 1 && 'publish' == $from_status && 'refund' == $to_status ) {
+			$this->tmp( 'ticket_url', $this->get_tickets_url() );
+
+			foreach ( $attendees as $attendee ) {
+				$attendee_email = get_post_meta( $attendee->ID, 'tix_email', true );
+
+				if ( $attendee_email != $receipt_email ) {
+					$subject = sprintf( __( "Your Refund for %s", 'camptix' ), $this->options['event_name'] );
+					$content = do_shortcode( $this->options['email_template_multiple_refund'] );
+
+					$this->log( sprintf( 'Sending refund e-mail notification to %s.', $attendee_email ), $attendees[0]->ID );
+					$this->wp_mail( $attendee_email, $subject, $content );
+
+					do_action( 'camptix_refund_emailed', $attendee->ID );
+				}
+			}
+		}
+
+		/**
 		 * Let's now e-mail the receipt, directly after a purchas has been made.
 		 */
 		if ( $from_status == 'draft' && ( in_array( $to_status, array( 'publish', 'pending' ) ) ) ) {
-			$edit_link = $this->get_access_tickets_link( $access_token );
 
+			// Fetch the attendee who's supposed to get the receipt.
+			$receipt_attendee = $attendees[0]; // default to the first one.
+			foreach ( $attendees as $attendee ) {
+				if ( $receipt_email == get_post_meta( $attendee->ID, 'tix_email', true ) ) {
+					$receipt_attendee = $attendee;
+					break;
+				}
+			}
+
+			$edit_link = $this->get_access_tickets_link( $access_token );
 			$payment_status = '';
+			$this->tmp( 'ticket_url', $edit_link );
+			$this->tmp( 'attendee_id', $receipt_attendee->ID );
 
 			// If the status is pending, let the buyer know about that in the receipt.
 			if ( 'pending' == $to_status )
@@ -6056,20 +6416,22 @@ class CampTix_Plugin {
 
 			if ( count( $attendees ) == 1 ) {
 
-				$content = sprintf( __( "Hey there!\n\nYou have purchased the following ticket:\n\n%s\n\nYou can edit the information for the purchased ticket at any time before the event, by visiting the following link:\n\n%s\n\n%s%s", 'camptix' ), $receipt_content, $edit_link, $payment_status, $signature );
+				$content = do_shortcode( $this->options['email_template_single_purchase'] );
+
 				$subject = sprintf( __( "Your Ticket to %s", 'camptix' ), $this->options['event_name'] );
 
-				$this->log( sprintf( 'Sent a ticket and receipt to %s.', $receipt_email ), $attendees[0]->ID );
+				$this->log( sprintf( 'Sent a ticket and receipt to %s.', $receipt_email ), $receipt_attendee->ID );
 				$this->wp_mail( $receipt_email, $subject, $content );
 
-				do_action( 'camptix_ticket_emailed', $attendees[0]->ID );
+				do_action( 'camptix_ticket_emailed', $receipt_attendee->ID );
 
 			} elseif ( count( $attendees ) > 1 ) {
 
-				$content = sprintf( __( "Hey there!\n\nYou have purchased the following tickets:\n\n%s\n\nYou can edit the information for all the purchased tickets at any time before the event, by visiting the following link:\n\n%s\n\n%s%s", 'camptix' ), $receipt_content, $edit_link, $payment_status, $signature );
+				$content = do_shortcode( $this->options['email_template_multiple_purchase_receipt'] );
+
 				$subject = sprintf( __( "Your Tickets to %s", 'camptix' ), $this->options['event_name'] );
 
-				$this->log( sprintf( 'Sent a receipt to %s.', $receipt_email ), $attendees[0]->ID );
+				$this->log( sprintf( 'Sent a receipt to %s.', $receipt_email ), $receipt_attendee->ID );
 				$this->wp_mail( $receipt_email, $subject, $content );
 			}
 		}
@@ -6078,21 +6440,39 @@ class CampTix_Plugin {
 		 * This is mainly for notifications that would set the status after an IPN.
 		 */
 		if ( $from_status == 'pending' && $to_status == 'publish' ) {
-			$edit_link = $this->get_access_tickets_link( $access_token );
+			$this->tmp( 'ticket_url', $this->get_access_tickets_link( $access_token ) );
 			$subject = sprintf( __( "Your Payment for %s", 'camptix' ), $this->options['event_name'] );
-			$content = sprintf( __( "Hey there!\n\nYour payment for %s has been completed, looking forward to seeing you at the event! You can access and change your tickets information by visiting the following link:\n\n%s\n\nLet us know if you need any help!", 'camptix' ), $this->options['event_name'], $edit_link );
+			$content = do_shortcode( $this->options['email_template_pending_succeeded'] );
 
 			$this->log( sprintf( 'Sending completed e-mail notification after IPN to %s.', $receipt_email ), $attendees[0]->ID );
 			$this->wp_mail( $receipt_email, $subject, $content );
 		}
 
 		if ( $from_status == 'pending' && $to_status == 'failed' ) {
+			$this->tmp( 'ticket_url', $this->get_tickets_url() );
 			$subject = sprintf( __( "Your Payment for %s", 'camptix' ), $this->options['event_name'] );
-			$content = sprintf( __( "Hey there!\n\nWe're so sorry, but it looks like your payment for %s has failed! Please check your payment transactions for more details. If you still wish to attend the event, feel free to purchase a new ticket using the following link:\n\n%s\n\nLet us know if you need any help!", 'camptix' ), $this->options['event_name'], $this->get_tickets_url() );
+			$content = do_shortcode( $this->options['email_template_pending_failed'] );
 
 			$this->log( sprintf( 'Sending failed e-mail notification after IPN to %s.', $receipt_email ), $attendees[0]->ID );
 			$this->wp_mail( $receipt_email, $subject, $content );
 		}
+
+		if ( $from_status == 'publish' && $to_status == 'refund' ) {
+			$this->tmp( 'ticket_url', $this->get_tickets_url() );
+			$subject = sprintf( __( "Your Refund for %s", 'camptix' ), $this->options['event_name'] );
+			$content = do_shortcode( $this->options['email_template_single_refund'] );
+
+			$this->log( sprintf( 'Sending refund e-mail notification to %s.', $receipt_email ), $attendees[0]->ID );
+			$this->wp_mail( $receipt_email, $subject, $content );
+		}
+
+		$this->tmp( 'attendee_id', false );
+		$this->tmp( 'ticket_url', false );
+		$this->tmp( 'receipt', false );
+
+		// Bring the original shortcodes back.
+		$shortcode_tags = $this->removed_shortcodes;
+		$this->removed_shortcodes = array();
 	}
 
 	function redirect_with_error_flags( $query_args = array() ) {
@@ -6258,11 +6638,18 @@ class CampTix_Plugin {
 	}
 
 	function wp_mail( $to, $subject, $message, $headers = array(), $attachments = '' ) {
+		do_action( 'camptix_wp_mail_start' );
+
 		if ( is_email( get_option( 'admin_email' ) ) && is_array( $headers ) )
 			$headers[] = sprintf( 'From: %s <%s>', $this->options['event_name'], get_option( 'admin_email' ) );
+		$message_data = array( 'to' => $to, 'subject' => $subject, 'message' => $message, 'headers' => $headers );
 
-		$this->log( sprintf( 'Sent e-mail to %s.', $to ), null, array( 'subject' => $subject, 'message' => $message ) );
-		return wp_mail( $to, $subject, $message, $headers, $attachments );
+		$results = wp_mail( $to, $subject, $message, $headers, $attachments );
+		$log_message = $results ? sprintf( 'Sent e-mail to %s.', $to ) : sprintf( 'E-mail to %s failed to send.', $to );
+		$this->log( $log_message, null, $message_data, 'email' );
+
+		do_action( 'camptix_wp_mail_finish' );
+		return $results;
 	}
 
 	/**
@@ -6320,6 +6707,26 @@ class CampTix_Plugin {
 		}
 
 		$this->addons[] = $classname;
+	}
+
+	/**
+	 * Temporary storage (non-persistent)
+	 *
+	 * Use this fuction to access the CampTix temporary storage for things like attendee_id
+	 * for notify shortcodes, and receipt for e-mail templates, etc. You can also use it to
+	 * store your own stuff, but don't forget to cleanup when you're done.
+	 *
+	 * @param $key string The key to access/store the value with.
+	 * @param $value mixed An optional value when storing things.
+	 */
+	public function tmp( $key, $value = null ) {
+		if ( null !== $value )
+			$this->tmp[ $key ] = $value;
+
+		if ( isset( $this->tmp[ $key ] ) )
+			$value = $this->tmp[ $key ];
+
+		return $value;
 	}
 }
 
