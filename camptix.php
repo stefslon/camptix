@@ -3475,7 +3475,7 @@ class CampTix_Plugin {
 		?>
 		<?php if ( $values ) : ?>
 			<?php foreach ( (array) $values as $question_value ) : ?>
-				<label><input <?php checked( in_array( $question_value, (array) $user_value ) ); ?> name="<?php echo esc_attr( $name ); ?>[<?php echo sanitize_title_with_dashes( $question_value ); ?>]" type="checkbox" value="<?php echo esc_attr( $question_value ); ?>" <?php if ($required) echo 'class="required"'; ?> /> <?php echo esc_html( $question_value ); ?></label><br />
+				<label><input <?php checked( in_array( $question_value, (array) $user_value ) ); ?> name="<?php echo esc_attr( $name ); ?>[<?php echo sanitize_title_with_dashes( $question_value ); ?>]" type="checkbox" value="<?php echo esc_attr( $question_value ); ?>" <?php if ($required) echo 'class="required"'; ?> /> <?php echo esc_html( $question_value ); ?></label>
 			<?php endforeach; ?>
 		<?php else : ?>
 			<label><input <?php checked( $user_value, 'Yes' ); ?> name="<?php echo esc_attr( $name ); ?>" type="checkbox" value="Yes" /> <?php _e( 'Yes', 'camptix' ); ?></label>
@@ -4770,7 +4770,7 @@ class CampTix_Plugin {
 
 										<!--<tr class="<?php echo esc_attr( $class_name ); ?>">-->
 										<label><?php echo esc_html( apply_filters( 'the_title', $question->post_title ) ); ?><?php if ( $required ) echo ' <span class="tix-required-star">*</span>'; ?></label>
-										<?php do_action( "camptix_question_field_{$type}", $name, $value, $question ); ?>
+										<?php do_action( "camptix_question_field_{$type}", $name, $value, $question, $required ); ?>
 
 									<?php endforeach; ?>
 
@@ -4792,7 +4792,7 @@ class CampTix_Plugin {
 
 				<?php if ( $total > 0 ) : ?>
 					<div class="row">
-						<div class="large-12 columns text-right">
+						<div class="large-6 columns">
 							<?php if (count($this->get_enabled_payment_methods())>1) : ?>
 								<select name="tix_payment_method">
 									<?php foreach ( $this->get_enabled_payment_methods() as $payment_method_key => $payment_method ) : ?>
@@ -4806,8 +4806,8 @@ class CampTix_Plugin {
 								<img src="<?php echo plugins_url( '/images/'.$payment_method_key.'.jpg', __FILE__ ); ?>" class="tix-payment-img" />
 								<input type="hidden" name="tix_payment_method" value="<?php echo esc_attr( $payment_method_key ); ?>" />
 							<?php endif; ?>
-
-							<br />
+						</div>
+						<div class="large-6 columns text-right">
 							<input type="submit" value="<?php esc_attr_e( 'Checkout &rarr;', 'camptix' ); ?>" class="button right radius" />
 						</div>
 					</div>
@@ -5105,7 +5105,7 @@ class CampTix_Plugin {
 								?>
 
 								<label><?php echo esc_html( apply_filters( 'the_title', $question->post_title ) ); ?><?php if ( $required ) echo ' <span class="tix-required-star">*</span>'; ?></label>
-								<?php do_action( "camptix_question_field_{$type}", $name, $value, $question ); ?>
+								<?php do_action( "camptix_question_field_{$type}", $name, $value, $question, $required ); ?>
 
 							<?php endforeach; ?>
 
@@ -6542,7 +6542,7 @@ class CampTix_Plugin {
 				if ( in_array( $message, $printed ) ) continue;
 
 				$printed[] = $message;
-				echo '<div class="alert-box alert">' . esc_html( $message ) . '</div>';
+				echo '<div class="alert-box alert radius">' . esc_html( $message ) . '</div>';
 			}
 			//echo '</div><!-- #tix-errors -->';
 		}
@@ -6553,7 +6553,7 @@ class CampTix_Plugin {
 				if ( in_array( $message, $printed ) ) continue;
 
 				$printed[] = $message;
-				echo '<div class="alert-box">' . esc_html( $message ) . '</div>';
+				echo '<div class="alert-box radius">' . esc_html( $message ) . '</div>';
 			}
 			//echo '</div><!-- #tix-notices -->';
 		}
@@ -6564,7 +6564,7 @@ class CampTix_Plugin {
 				if ( in_array( $message, $printed ) ) continue;
 
 				$printed[] = $message;
-				echo '<div class="alert-box success">' . esc_html( $message ) . '</div>';
+				echo '<div class="alert-box success radius">' . esc_html( $message ) . '</div>';
 			}
 			//echo '</div><!-- #tix-infos -->';
 		}
